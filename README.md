@@ -1,111 +1,40 @@
 # Proxy Installer
 
-Автоматическая установка прокси-сервера на базе **3proxy** для Ubuntu **20.04 / 22.04 / 24.04**.
+Установщик прокси IPv4/IPv6 для Ubuntu 20.04 / 22.04 / 24.04
 
-- **IPv4** — одна прокси с выходом через IPv4 адрес сервера
-- **IPv6** — до 1000 прокси, каждая с уникальным IPv6 адресом (один сервер — разные выходные IP)
-- **Веб-панель** — опциональная страница `http://IP/panel` со списком прокси, поиском и скачиванием
-
----
-
-## Установка одной командой
-
-Скопируйте и вставьте в терминал (SSH, MobaXterm и т.п.):
+## Быстрая установка
 
 ```bash
-export LANG=C.UTF-8; curl -fsSL https://raw.githubusercontent.com/ВАШ_ЛОГИН/proxy-installer/main/install.sh -o /tmp/pi.sh && sed -i 's/\r$//' /tmp/pi.sh && bash /tmp/pi.sh
+curl -fsSL https://raw.githubusercontent.com/flannaganjosephine924/proxy-installer/main/install.sh -o /tmp/pi.sh && sed -i 's/\r$//' /tmp/pi.sh && bash /tmp/pi.sh
 ```
 
-Если `curl` не установлен:
-
+Альтернатива (wget):
 ```bash
-export LANG=C.UTF-8; wget -qO /tmp/pi.sh https://raw.githubusercontent.com/ВАШ_ЛОГИН/proxy-installer/main/install.sh && sed -i 's/\r$//' /tmp/pi.sh && bash /tmp/pi.sh
+wget -qO /tmp/pi.sh https://raw.githubusercontent.com/flannaganjosephine924/proxy-installer/main/install.sh && sed -i 's/\r$//' /tmp/pi.sh && bash /tmp/pi.sh
 ```
 
-> Замените `ВАШ_ЛОГИН` на ваш GitHub username.
+## Возможности
 
----
+- **IPv4** — одна прокси с выходом через IPv4 сервера
+- **IPv6** — до 1000 прокси, каждая с уникальным IPv6 адресом
+- **Протокол** — SOCKS5 или HTTP
+- **Веб‑панель** — опционально: `http://IP/panel`
+- **Форматы вывода:**
+  - `IP:PORT:LOGIN:PASS`
+  - `IP:PORT@LOGIN:PASS`
+  - `LOGIN:PASS@IP:PORT`
+  - `LOGIN:PASS:IP:PORT`
 
 ## Требования
 
-| | |
-|---|---|
-| ОС | Ubuntu 20.04 / 22.04 / 24.04 LTS |
-| Права | root |
-| RAM | от 512 MB |
-| IPv6 | Для IPv6-режима: глобальная /48 или /64 подсеть от провайдера |
+- Ubuntu 20.04 / 22.04 / 24.04 LTS
+- Доступ root
+- Для IPv6: включённый IPv6 и подсеть /48 или /64 от провайдера
 
-
----
-
-## Мастер установки (5 шагов)
-
-1. **Тип прокси** — IPv4 или IPv6
-2. **Количество** — для IPv6: от 1 до 1000
-3. **Формат вывода** — 4 варианта
-4. **Веб-панель** — опционально (nginx + HTTP Basic Auth)
-5. **Подтверждение** — чек-лист и старт
-
----
-
-## Что устанавливается
-
-- **3proxy** (SOCKS5, компиляция из исходников — всегда актуальная версия)
-- **UFW** — открываются только нужные порты
-- **Systemd** сервис — автозапуск после перезагрузки
-- Для IPv6: виртуальные адреса на интерфейсе + sysctl forwarding
-- Опционально: **Nginx** + веб-панель с паролем
-
----
-
-## Веб-панель
-
-Если выбрана при установке — доступна по адресу `http://ВАШ_IP/panel`
-
-Возможности:
-- Список всех прокси
-- Поиск и фильтр в реальном времени
-- Кнопка «Скопировать всё»
-- Кнопка «Скачать .txt»
-- Информация о сервере
-
-Логин и пароль от панели сохраняются в `/root/panel_credentials.txt`
-
----
-
-## Форматы вывода
-
-```
-[1]  IP:PORT:LOGIN:PASS      172.233.96.133:10001:login:pass
-[2]  IP:PORT@LOGIN:PASS      172.233.96.133:10001@login:pass
-[3]  LOGIN:PASS@IP:PORT      login:pass@172.233.96.133:10001
-[4]  LOGIN:PASS:IP:PORT      login:pass:172.233.96.133:10001
-```
-
----
-
-## Управление после установки
+## После установки
 
 ```bash
-# Статус
-systemctl status 3proxy
-
-# Перезапуск
-systemctl restart 3proxy
-
-# Полный список прокси
-cat /root/proxy_list.txt
-
-# Данные от веб-панели
-cat /root/panel_credentials.txt
+cat /root/proxy_list.txt        # список прокси
+systemctl status 3proxy         # статус
+systemctl restart 3proxy        # перезапуск
 ```
-
----
-
-## Порты
-
-По умолчанию прокси занимают порты начиная с **10000**:
-
-- 1 прокси → `10000`
-- 100 прокси → `10000–10099`
-- 1000 прокси → `10000–10999`
