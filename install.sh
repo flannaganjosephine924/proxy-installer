@@ -268,24 +268,24 @@ install_dependencies() {
 }
 
 install_3proxy() {
-    step "Загрузка 3proxy..."
+    step "Загрузка исходников прокси..."
     local ver
     ver=$(curl -s --max-time 10 https://api.github.com/repos/3proxy/3proxy/releases/latest \
           | grep '"tag_name"' | cut -d'"' -f4 | tr -d 'v' || true)
     if [[ -z "$ver" || "$ver" == "null" ]]; then ver="0.9.4"; fi
-    info "Версия: $ver"
+    info "Версия движка: $ver"
 
     cd /tmp
     rm -rf 3proxy-build && mkdir 3proxy-build && cd 3proxy-build
     wget -q "https://github.com/3proxy/3proxy/archive/refs/tags/${ver}.tar.gz" -O src.tar.gz \
-        || { err "Ошибка загрузки 3proxy"; exit 1; }
+        || { err "Ошибка загрузки исходников"; exit 1; }
     tar -xzf src.tar.gz
     cd "3proxy-${ver}" 2>/dev/null || cd 3proxy-* || { err "Не найден распакованный каталог 3proxy"; exit 1; }
 
-    step "Компиляция..."
+    step "Сборка..."
     local build_log="/tmp/3proxy-build.log"
     if ! make -f Makefile.Linux >"$build_log" 2>&1; then
-        err "Ошибка компиляции 3proxy. Лог: $build_log"
+        err "Ошибка сборки. Лог: $build_log"
         echo ""
         echo "----- последние строки лога -----"
         tail -n 50 "$build_log" 2>/dev/null || true
@@ -314,7 +314,7 @@ install_3proxy() {
     cp "$built_bin" "$INSTALL_DIR/3proxy"
     chmod +x "$INSTALL_DIR/3proxy"
     mkdir -p "$LOG_DIR"
-    success "3proxy v${ver} установлен (бинарник: $built_bin)"
+    success "Прокси-сервер установлен (сборка: $ver)"
 }
 
 detect_network() {
@@ -390,7 +390,9 @@ SCRIPT
     local count=0
     for addr in "${IPV6_ADDRESSES[@]}"; do
         echo "ip -6 addr add ${addr}/64 dev $NET_INTERFACE 2>/dev/null || true" >> "$IPV6_SCRIPT"
+        echo "ip -6 neigh add proxy ${addr} dev $NET_INTERFACE 2>/dev/null || ip -6 neigh replace proxy ${addr} dev $NET_INTERFACE 2>/dev/null || true" >> "$IPV6_SCRIPT"
         ip -6 addr add "${addr}/64" dev "$NET_INTERFACE" 2>/dev/null || true
+        ip -6 neigh add proxy "${addr}" dev "$NET_INTERFACE" 2>/dev/null || ip -6 neigh replace proxy "${addr}" dev "$NET_INTERFACE" 2>/dev/null || true
         (( count++ ))
         if (( count % 100 == 0 )); then
             info "Добавлено $count / $PROXY_COUNT..."
@@ -421,7 +423,15 @@ configure_ipv6_kernel() {
     step "Включение IPv6 forwarding..."
     sysctl -w net.ipv6.conf.all.forwarding=1 > /dev/null 2>&1
     sysctl -w net.ipv6.conf.all.proxy_ndp=1 > /dev/null 2>&1
+    if [[ -n "${NET_INTERFACE:-}" ]]; then
+        sysctl -w "net.ipv6.conf.${NET_INTERFACE}.proxy_ndp=1" > /dev/null 2>&1 || true
+        sysctl -w "net.ipv6.conf.${NET_INTERFACE}.forwarding=1" > /dev/null 2>&1 || true
+        # На многих VPS IPv6 маршрут приходит через RA. При forwarding=1 RA может отключиться,
+        # поэтому явно разрешаем принимать RA.
+        sysctl -w "net.ipv6.conf.${NET_INTERFACE}.accept_ra=2" > /dev/null 2>&1 || true
+    fi
     sysctl -w net.ipv6.conf.default.forwarding=1 > /dev/null 2>&1
+    sysctl -w net.ipv6.conf.default.accept_ra=2 > /dev/null 2>&1 || true
     grep -q "net.ipv6.conf.all.forwarding" /etc/sysctl.conf || \
     cat >> /etc/sysctl.conf <<'EOF'
 
@@ -429,6 +439,14 @@ net.ipv6.conf.all.forwarding=1
 net.ipv6.conf.default.forwarding=1
 net.ipv6.conf.all.proxy_ndp=1
 EOF
+    if [[ -n "${NET_INTERFACE:-}" ]] && ! grep -q "net.ipv6.conf.${NET_INTERFACE}.proxy_ndp" /etc/sysctl.conf; then
+        cat >> /etc/sysctl.conf <<EOF
+net.ipv6.conf.${NET_INTERFACE}.proxy_ndp=1
+net.ipv6.conf.${NET_INTERFACE}.forwarding=1
+net.ipv6.conf.${NET_INTERFACE}.accept_ra=2
+EOF
+    fi
+    grep -q "net.ipv6.conf.default.accept_ra" /etc/sysctl.conf || echo "net.ipv6.conf.default.accept_ra=2" >> /etc/sysctl.conf
     sysctl -p > /dev/null 2>&1 || true
     success "IPv6 forwarding включён"
 }
@@ -438,6 +456,7 @@ configure_3proxy() {
 
     cat > "$CONFIG_FILE" <<EOF
 nscache 65536
+nscache6 65536
 timeouts 1 5 30 60 180 1800 15 60
 daemon
 pidfile /var/run/3proxy.pid
@@ -449,6 +468,12 @@ maxconn 200
 auth strong
 
 EOF
+    if [[ "$PROXY_TYPE" == "ipv6" ]]; then
+        # IPv6 DNS - помогает, чтобы резолвилось в AAAA и "выход" был IPv6
+        echo "nserver 2606:4700:4700::1111" >> "$CONFIG_FILE"
+        echo "nserver 2606:4700:4700::1001" >> "$CONFIG_FILE"
+        echo "" >> "$CONFIG_FILE"
+    fi
 
     PROXY_LOGINS=(); PROXY_PASSES=()
     for (( i=0; i<PROXY_COUNT; i++ )); do
@@ -468,9 +493,17 @@ EOF
             echo "external ${IPV6_ADDRESSES[$i]}" >> "$CONFIG_FILE"
         fi
         if [[ "$PROXY_PROTOCOL" == "http" ]]; then
-            echo "proxy -i0.0.0.0 -p${port}" >> "$CONFIG_FILE"
+            if [[ "$PROXY_TYPE" == "ipv6" ]]; then
+                echo "proxy -6 -i0.0.0.0 -p${port}" >> "$CONFIG_FILE"
+            else
+                echo "proxy -i0.0.0.0 -p${port}" >> "$CONFIG_FILE"
+            fi
         else
-            echo "socks -i0.0.0.0 -p${port}" >> "$CONFIG_FILE"
+            if [[ "$PROXY_TYPE" == "ipv6" ]]; then
+                echo "socks -6 -i0.0.0.0 -p${port}" >> "$CONFIG_FILE"
+            else
+                echo "socks -i0.0.0.0 -p${port}" >> "$CONFIG_FILE"
+            fi
         fi
         echo "flush" >> "$CONFIG_FILE"
         echo "" >> "$CONFIG_FILE"
@@ -487,7 +520,7 @@ EOF
 }
 
 setup_3proxy_service() {
-    step "systemd-сервис 3proxy..."
+    step "Запуск прокси-сервиса..."
     local after="network-online.target"
     local wants="network-online.target"
     if [[ "$PROXY_TYPE" == "ipv6" ]]; then
@@ -518,9 +551,9 @@ EOF
     systemctl restart 3proxy || true
     sleep 3
     if systemctl is-active --quiet 3proxy; then
-        success "3proxy запущен"
+        success "Прокси-сервис запущен"
     else
-        warn "3proxy не запустился. Проверьте: journalctl -u 3proxy -n 30"
+        warn "Прокси-сервис не запустился. Проверьте: journalctl -u 3proxy -n 30"
     fi
 }
 
@@ -536,8 +569,10 @@ setup_firewall() {
     local end_port=$((START_PORT + PROXY_COUNT - 1))
     if (( PROXY_COUNT == 1 )); then
         ufw allow "${START_PORT}/tcp" > /dev/null 2>&1
+        if [[ "$PROXY_PROTOCOL" == "socks5" ]]; then ufw allow "${START_PORT}/udp" > /dev/null 2>&1; fi
     else
         ufw allow "${START_PORT}:${end_port}/tcp" > /dev/null 2>&1
+        if [[ "$PROXY_PROTOCOL" == "socks5" ]]; then ufw allow "${START_PORT}:${end_port}/udp" > /dev/null 2>&1; fi
     fi
     ufw reload > /dev/null 2>&1
     success "Фаервол настроен"
@@ -560,66 +595,168 @@ generate_panel_html() {
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Панель прокси</title>
-<script src="https://cdn.tailwindcss.com"></script>
 <style>
-::-webkit-scrollbar{width:6px}
-::-webkit-scrollbar-track{background:#1e293b}
-::-webkit-scrollbar-thumb{background:#475569;border-radius:3px}
-.proxy-line{font-family:monospace;font-size:13px}
+  :root{
+    --bg:#0b1220; --card:#111a2e; --line:#1f2a44; --text:#e6edf7; --muted:#93a4c7;
+    --cyan:#22d3ee; --green:#34d399; --yellow:#fbbf24; --red:#fb7185; --btn:#1d2a46;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:linear-gradient(180deg,#070c16, var(--bg));color:var(--text);font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial}
+  a{color:var(--cyan);text-decoration:none}
+  .wrap{max-width:1100px;margin:0 auto;padding:18px}
+  .topbar{display:flex;gap:14px;align-items:center;justify-content:space-between;padding:14px 16px;border:1px solid var(--line);background:rgba(17,26,46,.75);backdrop-filter:blur(8px);border-radius:14px}
+  .brand{display:flex;align-items:center;gap:12px}
+  .logo{width:36px;height:36px;border-radius:10px;background:linear-gradient(135deg,var(--cyan),#8b5cf6);display:flex;align-items:center;justify-content:center;color:#08101f;font-weight:800}
+  .title{font-weight:750;letter-spacing:.2px}
+  .sub{font-size:12px;color:var(--muted)}
+  .badges{display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end}
+  .badge{font-size:12px;padding:6px 10px;border-radius:999px;border:1px solid var(--line);background:rgba(29,42,70,.6);color:var(--text)}
+  .badge.cyan{border-color:rgba(34,211,238,.35);color:#a5f3fc;background:rgba(34,211,238,.10)}
+  .grid{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-top:14px}
+  .card{border:1px solid var(--line);background:rgba(17,26,46,.55);border-radius:14px;padding:12px 14px}
+  .card .k{font-size:12px;color:var(--muted);margin-bottom:6px}
+  .mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+  .controls{display:flex;gap:10px;align-items:center;justify-content:space-between;margin-top:14px;flex-wrap:wrap}
+  .search{flex:1;min-width:240px;display:flex;gap:10px;align-items:center}
+  input[type="text"]{width:100%;padding:10px 12px;border-radius:12px;border:1px solid var(--line);background:rgba(11,18,32,.55);color:var(--text);outline:none}
+  input[type="text"]:focus{border-color:rgba(34,211,238,.55);box-shadow:0 0 0 3px rgba(34,211,238,.12)}
+  .btns{display:flex;gap:10px;flex-wrap:wrap}
+  button{cursor:pointer;border:none;border-radius:12px;padding:10px 12px;background:var(--btn);color:var(--text);border:1px solid var(--line);font-weight:650}
+  button:hover{filter:brightness(1.08)}
+  button.primary{background:linear-gradient(135deg,var(--cyan),#60a5fa);border:0;color:#071220}
+  button.ghost{background:transparent}
+  .list{margin-top:12px;border-radius:14px;border:1px solid var(--line);overflow:hidden;background:rgba(17,26,46,.45)}
+  .listhead{display:flex;justify-content:space-between;align-items:center;padding:10px 14px;border-bottom:1px solid var(--line);color:var(--muted);font-size:12px}
+  .rows{max-height:62vh;overflow:auto}
+  .row{display:flex;gap:12px;align-items:center;justify-content:space-between;padding:10px 14px;border-bottom:1px solid rgba(31,42,68,.55)}
+  .row:last-child{border-bottom:none}
+  .row:hover{background:rgba(29,42,70,.35)}
+  .copybtn{padding:8px 10px;border-radius:10px;font-size:12px;background:rgba(29,42,70,.8)}
+  .hint{margin-top:10px;color:var(--muted);font-size:12px;line-height:1.4}
+  .toast{position:fixed;right:16px;bottom:16px;min-width:180px;max-width:320px;padding:10px 12px;border-radius:12px;border:1px solid var(--line);background:rgba(17,26,46,.92);color:var(--text);display:none}
+  .toast.ok{border-color:rgba(52,211,153,.35)}
+  .toast.bad{border-color:rgba(251,113,133,.35)}
+  @media (max-width: 900px){.grid{grid-template-columns:repeat(2,1fr)}}
+  @media (max-width: 520px){.grid{grid-template-columns:1fr}.badges{justify-content:flex-start}}
 </style>
 </head>
-<body class="bg-slate-900 text-slate-100 min-h-screen">
-<div class="bg-slate-800 border-b border-slate-700 px-6 py-4 flex items-center justify-between">
-  <div class="flex items-center gap-3">
-    <div class="w-8 h-8 bg-cyan-500 rounded-lg flex items-center justify-center text-slate-900 font-bold">P</div>
-    <div><div class="font-semibold">Панель прокси</div><div class="text-xs text-slate-400">${ip}</div></div>
-  </div>
-  <div class="flex items-center gap-2">
-    <span class="px-2 py-1 bg-purple-500/20 text-purple-300 rounded text-xs">${ptype^^} ${pproto^^}</span>
-    <span class="px-2 py-1 bg-slate-700 rounded text-xs">${pcount} прокси</span>
-  </div>
-</div>
-<div class="px-6 py-5 grid grid-cols-2 md:grid-cols-4 gap-4">
-  <div class="bg-slate-800 rounded-xl p-4 border border-slate-700">
-    <div class="text-xs text-slate-400 mb-1">Сервер</div>
-    <div class="font-mono text-sm text-cyan-400">${ip}</div>
-  </div>
-  <div class="bg-slate-800 rounded-xl p-4 border border-slate-700">
-    <div class="text-xs text-slate-400 mb-1">Тип</div>
-    <div class="font-semibold">${ptype^^} ${pproto^^}</div>
-  </div>
-  <div class="bg-slate-800 rounded-xl p-4 border border-slate-700">
-    <div class="text-xs text-slate-400 mb-1">Количество</div>
-    <div class="font-semibold">${pcount}</div>
-  </div>
-  <div class="bg-slate-800 rounded-xl p-4 border border-slate-700">
-    <div class="text-xs text-slate-400 mb-1">Формат</div>
-    <div class="text-xs font-mono">${fmt}</div>
-  </div>
-</div>
-<div class="px-6 pb-4 flex gap-3">
-  <input id="searchInput" type="text" placeholder="Поиск..."
-    class="flex-1 bg-slate-800 border border-slate-600 rounded-lg px-4 py-2 text-sm focus:outline-none focus:border-cyan-500"
-    oninput="filterProxies()">
-  <button onclick="copyAll()" class="px-4 py-2 bg-cyan-600 hover:bg-cyan-500 rounded-lg text-sm font-medium">Копировать всё</button>
-  <button onclick="downloadTxt()" class="px-4 py-2 bg-slate-700 hover:bg-slate-600 rounded-lg text-sm font-medium">Скачать</button>
-</div>
-<div class="px-6 pb-8">
-  <div class="bg-slate-800 border border-slate-700 rounded-xl overflow-hidden">
-    <div class="px-4 py-2 border-b border-slate-700 flex justify-between">
-      <span class="text-xs text-slate-400">Список прокси</span>
-      <span id="visibleCount" class="text-xs text-slate-500">${pcount}</span>
+<body>
+<div class="wrap">
+  <div class="topbar">
+    <div class="brand">
+      <div class="logo">P</div>
+      <div>
+        <div class="title">Панель прокси</div>
+        <div class="sub mono">${ip}</div>
+      </div>
     </div>
-    <div id="proxyList" class="divide-y divide-slate-700/50 max-h-[60vh] overflow-y-auto"></div>
+    <div class="badges">
+      <div class="badge cyan">${ptype^^} ${pproto^^}</div>
+      <div class="badge">${pcount} шт.</div>
+    </div>
+  </div>
+
+  <div class="grid">
+    <div class="card">
+      <div class="k">Сервер</div>
+      <div class="mono" style="color:var(--cyan)">${ip}</div>
+    </div>
+    <div class="card">
+      <div class="k">Тип</div>
+      <div style="font-weight:750">${ptype^^} ${pproto^^}</div>
+    </div>
+    <div class="card">
+      <div class="k">Количество</div>
+      <div style="font-weight:750">${pcount}</div>
+    </div>
+    <div class="card">
+      <div class="k">Формат</div>
+      <div class="mono" style="font-size:12px">${fmt}</div>
+    </div>
+  </div>
+
+  <div class="controls">
+    <div class="search">
+      <input id="searchInput" type="text" placeholder="Поиск по списку..." oninput="filterProxies()">
+    </div>
+    <div class="btns">
+      <button class="primary" onclick="copyAll()">Копировать всё</button>
+      <button onclick="downloadTxt()">Скачать .txt</button>
+      <button class="ghost" onclick="clearSearch()">Сброс</button>
+    </div>
+  </div>
+
+  <div class="list">
+    <div class="listhead">
+      <span>Список прокси</span>
+      <span>Показано: <span id="visibleCount">${pcount}</span></span>
+    </div>
+    <div id="proxyList" class="rows"></div>
+  </div>
+
+  <div class="hint">
+    Если вы проверяете "выходной IP" для IPv6-прокси - используйте IPv6-доступные сайты (например, <span class="mono">api64.ipify.org</span>).
+    На обычных IPv4-only сайтах всегда будет показываться IPv4.
   </div>
 </div>
+
+<div id="toast" class="toast"></div>
 <script>
 const proxies = [${js_list}];
 let filtered = [...proxies];
+
+function toast(msg, ok=true) {
+  const t = document.getElementById('toast');
+  t.className = 'toast ' + (ok ? 'ok' : 'bad');
+  t.textContent = msg;
+  t.style.display = 'block';
+  clearTimeout(window.__toastTimer);
+  window.__toastTimer = setTimeout(() => (t.style.display = 'none'), 1600);
+}
+
+function copyFallback(text) {
+  const ta = document.createElement('textarea');
+  ta.value = text;
+  ta.setAttribute('readonly', '');
+  ta.style.position = 'fixed';
+  ta.style.top = '-1000px';
+  document.body.appendChild(ta);
+  ta.select();
+  ta.setSelectionRange(0, ta.value.length);
+  let ok = false;
+  try { ok = document.execCommand('copy'); } catch (e) { ok = false; }
+  document.body.removeChild(ta);
+  return ok;
+}
+
+async function copyText(text) {
+  try {
+    if (navigator.clipboard && window.isSecureContext) {
+      await navigator.clipboard.writeText(text);
+      toast('Скопировано');
+      return true;
+    }
+  } catch (e) {}
+  const ok = copyFallback(text);
+  toast(ok ? 'Скопировано' : 'Не удалось скопировать', ok);
+  return ok;
+}
+
 function renderList(list) {
   const c = document.getElementById('proxyList');
-  if (!list.length) { c.innerHTML = '<div class="px-4 py-8 text-center text-slate-500">Пусто</div>'; return; }
-  c.innerHTML = list.map((p,i) => '<div class="px-4 py-2 hover:bg-slate-700/40 flex justify-between"><span class="proxy-line">'+p+'</span><button onclick="navigator.clipboard.writeText(\\''+p.replace(/'/g,"\\'")+'\\')" class="text-slate-400 hover:text-cyan-400 text-xs">копировать</button></div>').join('');
+  if (!list.length) {
+    c.innerHTML = '<div class="row" style="justify-content:center;color:var(--muted)">Пусто</div>';
+    return;
+  }
+  c.innerHTML = list.map((p) => {
+    const safe = p.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+    return (
+      '<div class="row">' +
+        '<span class="mono" style="font-size:13px;word-break:break-all">' + safe + '</span>' +
+        '<button class="copybtn" onclick="copyText(\\'' + p.replace(/\\/g,'\\\\').replace(/'/g,\"\\\\'\") + '\\')">копировать</button>' +
+      '</div>'
+    );
+  }).join('');
 }
 function filterProxies() {
   const q = document.getElementById('searchInput').value.toLowerCase();
@@ -627,7 +764,8 @@ function filterProxies() {
   document.getElementById('visibleCount').textContent = filtered.length;
   renderList(filtered);
 }
-function copyAll() { navigator.clipboard.writeText(filtered.join('\\n')); }
+function clearSearch() { document.getElementById('searchInput').value=''; filterProxies(); }
+function copyAll() { copyText(filtered.join('\\n')); }
 function downloadTxt() {
   const a = document.createElement('a');
   a.href = 'data:text/plain;charset=utf-8,' + encodeURIComponent(filtered.join('\\n'));
