@@ -493,17 +493,9 @@ EOF
             echo "external ${IPV6_ADDRESSES[$i]}" >> "$CONFIG_FILE"
         fi
         if [[ "$PROXY_PROTOCOL" == "http" ]]; then
-            if [[ "$PROXY_TYPE" == "ipv6" ]]; then
-                echo "proxy -6 -i0.0.0.0 -p${port}" >> "$CONFIG_FILE"
-            else
-                echo "proxy -i0.0.0.0 -p${port}" >> "$CONFIG_FILE"
-            fi
+            echo "proxy -i0.0.0.0 -p${port}" >> "$CONFIG_FILE"
         else
-            if [[ "$PROXY_TYPE" == "ipv6" ]]; then
-                echo "socks -6 -i0.0.0.0 -p${port}" >> "$CONFIG_FILE"
-            else
-                echo "socks -i0.0.0.0 -p${port}" >> "$CONFIG_FILE"
-            fi
+            echo "socks -i0.0.0.0 -p${port}" >> "$CONFIG_FILE"
         fi
         echo "flush" >> "$CONFIG_FILE"
         echo "" >> "$CONFIG_FILE"
@@ -585,8 +577,13 @@ generate_panel_html() {
 
     # Отдельный файл со списком прокси (проще и надежнее, чем вшивать в JS).
     # Nginx отдаст его по URL: /panel/proxies.txt
-    cp "$PROXY_LIST" "${PANEL_DIR}/proxies.txt" 2>/dev/null || true
-    chmod 0644 "${PANEL_DIR}/proxies.txt" 2>/dev/null || true
+    if [[ -f "$PROXY_LIST" ]]; then
+        cp "$PROXY_LIST" "${PANEL_DIR}/proxies.txt"
+        chmod 0644 "${PANEL_DIR}/proxies.txt"
+        info "Файл proxies.txt создан ($(wc -l < "${PANEL_DIR}/proxies.txt") строк)"
+    else
+        warn "Файл $PROXY_LIST не найден, список прокси в панели будет пустым"
+    fi
 
     cat > "${PANEL_DIR}/index.html" <<HTMLEOF
 <!DOCTYPE html>
@@ -812,11 +809,17 @@ server {
     listen 80 default_server;
     listen [::]:80 default_server;
     server_name _;
+
+    types {
+        text/plain txt;
+    }
+
     location /panel/ {
         alias /var/www/html/panel/;
         index index.html;
-        auth_basic "Панель прокси";
+        auth_basic "Proxy Panel";
         auth_basic_user_file /etc/nginx/.htpasswd-panel;
+        try_files $uri $uri/ =404;
     }
     location /panel { return 301 /panel/; }
     location / { return 301 /panel/; }
