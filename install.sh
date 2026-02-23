@@ -459,23 +459,19 @@ configure_3proxy() {
     cat > "$CONFIG_FILE" <<EOF
 nscache 65536
 nscache6 65536
-timeouts 1 5 30 60 180 1800 15 60
 daemon
 pidfile /var/run/3proxy.pid
 log $LOG_DIR/3proxy.log D
 logformat "- +_L%t.%.  %N.%p %E %U %C:%c %R:%r %O %I %h %T"
 rotate 30
-maxconn 200
+maxconn 3000
 
 auth strong
-authcache ip 1200
 
 EOF
     # Смешанный DNS обычно стабильнее на разных VPS
-    echo "nserver 1.1.1.1" >> "$CONFIG_FILE"
     echo "nserver 8.8.8.8" >> "$CONFIG_FILE"
-    echo "nserver 2606:4700:4700::1111" >> "$CONFIG_FILE"
-    echo "nserver 2606:4700:4700::1001" >> "$CONFIG_FILE"
+    echo "nserver 1.1.1.1" >> "$CONFIG_FILE"
     echo "" >> "$CONFIG_FILE"
 
     PROXY_LOGINS=(); PROXY_PASSES=()
@@ -495,6 +491,7 @@ EOF
         local port=$((START_PORT + i))
         echo "allow ${PROXY_LOGINS[$i]}" >> "$CONFIG_FILE"
         if [[ "$PROXY_TYPE" == "ipv6" ]]; then
+            echo "external $SERVER_IPV4" >> "$CONFIG_FILE"
             echo "external ${IPV6_ADDRESSES[$i]}" >> "$CONFIG_FILE"
         fi
         if [[ "$PROXY_PROTOCOL" == "http" ]]; then
