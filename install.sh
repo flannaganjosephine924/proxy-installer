@@ -631,30 +631,31 @@ EOF
 }
 
 configure_ipv6_routing() {
-    step "Настройка маршрутизации IPv6..."
-    
-    # MSS clamp - фикс для PMTU blackhole (сайты не грузятся)
-    iptables -t mangle -C POSTROUTING -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu 2>/dev/null || \
-        iptables -t mangle -A POSTROUTING -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu
-    ip6tables -t mangle -C POSTROUTING -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu 2>/dev/null || \
-        ip6tables -t mangle -A POSTROUTING -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu
-    
-    # Разрешаем исходящий IPv6 трафик
-    ip6tables -C OUTPUT -o "$NET_INTERFACE" -j ACCEPT 2>/dev/null || \
-        ip6tables -A OUTPUT -o "$NET_INTERFACE" -j ACCEPT
-    ip6tables -C INPUT -i "$NET_INTERFACE" -m state --state ESTABLISHED,RELATED -j ACCEPT 2>/dev/null || \
-        ip6tables -A INPUT -i "$NET_INTERFACE" -m state --state ESTABLISHED,RELATED -j ACCEPT
-    
-    # Сохраняем правила iptables
-    if command -v netfilter-persistent >/dev/null 2>&1; then
-        netfilter-persistent save 2>/dev/null || true
-    elif command -v iptables-save >/dev/null 2>&1; then
-        mkdir -p /etc/iptables
-        iptables-save > /etc/iptables/rules.v4 2>/dev/null || true
-        ip6tables-save > /etc/iptables/rules.v6 2>/dev/null || true
-    fi
-    
-    success "Маршрутизация IPv6 настроена"
+    # По просьбе: в логах оставляем только строку шага, без вывода iptables/правил.
+    step "Настройка маршрутизации..."
+
+    {
+        # MSS clamp - фикс для PMTU blackhole (сайты не грузятся)
+        iptables -t mangle -C POSTROUTING -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu 2>/dev/null || \
+            iptables -t mangle -A POSTROUTING -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu
+        ip6tables -t mangle -C POSTROUTING -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu 2>/dev/null || \
+            ip6tables -t mangle -A POSTROUTING -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu
+
+        # Разрешаем исходящий IPv6 трафик
+        ip6tables -C OUTPUT -o "$NET_INTERFACE" -j ACCEPT 2>/dev/null || \
+            ip6tables -A OUTPUT -o "$NET_INTERFACE" -j ACCEPT
+        ip6tables -C INPUT -i "$NET_INTERFACE" -m state --state ESTABLISHED,RELATED -j ACCEPT 2>/dev/null || \
+            ip6tables -A INPUT -i "$NET_INTERFACE" -m state --state ESTABLISHED,RELATED -j ACCEPT
+
+        # Сохраняем правила iptables
+        if command -v netfilter-persistent >/dev/null 2>&1; then
+            netfilter-persistent save 2>/dev/null || true
+        elif command -v iptables-save >/dev/null 2>&1; then
+            mkdir -p /etc/iptables
+            iptables-save > /etc/iptables/rules.v4 2>/dev/null || true
+            ip6tables-save > /etc/iptables/rules.v6 2>/dev/null || true
+        fi
+    } >/dev/null 2>&1 || true
 }
 
 configure_3proxy() {
@@ -884,10 +885,33 @@ PYEOF
   .hint { margin-top: 8px; color: var(--muted); font-size: 12px; }
   @media (max-width: 840px) { .grid { grid-template-columns: repeat(2,1fr); } }
   @media (max-width: 520px) { .grid { grid-template-columns: 1fr; } }
+
+  .promo {
+    display: block;
+    margin: 0 0 12px 0;
+    padding: 12px 14px;
+    border-radius: 14px;
+    text-decoration: none;
+    color: #071225;
+    font-weight: 900;
+    letter-spacing: .2px;
+    background: linear-gradient(135deg, #ffd84a, #39b6ff 55%, #7a7dff);
+    box-shadow: 0 10px 30px rgba(57,182,255,.15);
+  }
+  .promo small {
+    display: block;
+    font-weight: 700;
+    opacity: .9;
+    margin-top: 4px;
+  }
 </style>
 </head>
 <body>
 <div class="wrap">
+  <a class="promo" href="https://t.me/dmgoogleads" target="_blank" rel="noopener noreferrer">
+    Подписывайтесь на канал DM GOOGLE ADS — забирайте фишки и обновления
+    <small>Жми сюда: t.me/dmgoogleads</small>
+  </a>
   <div class="head">
     <div>
       <div class="title">Панель прокси</div>
@@ -1049,7 +1073,12 @@ print_results() {
         fi
         echo -e "  ${YELLOW}  (должен показать IPv6 адрес)${NC}"
     fi
-    echo ""; print_line; echo ""
+    echo ""
+    print_line; echo ""
+    echo -e "  ${YELLOW}${BOLD}  Подписывайтесь на канал: https://t.me/dmgoogleads${NC}"
+    echo -e "  ${YELLOW}  Там фишки, обновления и полезности — не пропусти.${NC}"
+    echo ""
+    print_line; echo ""
 }
 
 main() {
