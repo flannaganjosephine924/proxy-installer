@@ -51,4 +51,16 @@ sudo systemctl restart 3proxy nginx
 
 ### Проверка IPv6 "выхода"
 
-IPv6-прокси будут показывать IPv6 только на сайтах/ресурсах с поддержкой IPv6 (AAAA). Для проверки удобно использовать `api64.ipify.org`.
+IPv6-прокси покажут IPv6 только на IPv6-ресурсах. Самый правильный тест:
+
+SOCKS5:
+```bash
+curl -s --socks5-hostname "LOGIN:PASS@IP:PORT" https://api64.ipify.org
+```
+
+HTTP:
+```bash
+curl -s -x "http://LOGIN:PASS@IP:PORT" https://api64.ipify.org
+```
+
+Важно: если программа/чекер резолвит домен локально в IPv4 и отправляет в прокси уже IPv4-адрес, то на выходе будет IPv4 или соединение не установится (в строгом IPv6 режиме).
