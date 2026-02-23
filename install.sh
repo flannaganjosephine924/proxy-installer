@@ -280,15 +280,41 @@ install_3proxy() {
     wget -q "https://github.com/3proxy/3proxy/archive/refs/tags/${ver}.tar.gz" -O src.tar.gz \
         || { err "Ошибка загрузки 3proxy"; exit 1; }
     tar -xzf src.tar.gz
-    cd "3proxy-${ver}"
+    cd "3proxy-${ver}" 2>/dev/null || cd 3proxy-* || { err "Не найден распакованный каталог 3proxy"; exit 1; }
 
     step "Компиляция..."
-    make -f Makefile.Linux > /dev/null 2>&1
+    local build_log="/tmp/3proxy-build.log"
+    if ! make -f Makefile.Linux >"$build_log" 2>&1; then
+        err "Ошибка компиляции 3proxy. Лог: $build_log"
+        echo ""
+        echo "----- последние строки лога -----"
+        tail -n 50 "$build_log" 2>/dev/null || true
+        echo "--------------------------------"
+        exit 1
+    fi
+
+    local built_bin=""
+    if [[ -f "src/3proxy" ]]; then
+        built_bin="src/3proxy"
+    elif [[ -f "bin/3proxy" ]]; then
+        built_bin="bin/3proxy"
+    elif [[ -f "./3proxy" ]]; then
+        built_bin="./3proxy"
+    fi
+
+    if [[ -z "$built_bin" ]]; then
+        err "Сборка завершилась, но бинарник 3proxy не найден (ожидался src/3proxy или bin/3proxy)."
+        echo ""
+        echo "Подсказка: проверьте содержимое /tmp/3proxy-build и лог компиляции:"
+        echo "  ls -la /tmp/3proxy-build && ls -la /tmp/3proxy-build/* && tail -n 50 $build_log"
+        exit 1
+    fi
+
     mkdir -p "$INSTALL_DIR"
-    cp src/3proxy "$INSTALL_DIR/3proxy"
+    cp "$built_bin" "$INSTALL_DIR/3proxy"
     chmod +x "$INSTALL_DIR/3proxy"
     mkdir -p "$LOG_DIR"
-    success "3proxy v${ver} установлен"
+    success "3proxy v${ver} установлен (бинарник: $built_bin)"
 }
 
 detect_network() {
