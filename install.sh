@@ -480,6 +480,17 @@ EOF
     success "IPv6 forwarding включён"
 }
 
+configure_mss_clamp() {
+    step "Фикс MTU (MSS clamp)..."
+    # Частая причина: соединение к сайту есть, но страницы/картинки не грузятся (PMTU blackhole).
+    # MSS clamp лечит это и для IPv4, и для IPv6.
+    iptables -t mangle -C POSTROUTING -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu 2>/dev/null || \
+        iptables -t mangle -A POSTROUTING -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu
+    ip6tables -t mangle -C POSTROUTING -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu 2>/dev/null || \
+        ip6tables -t mangle -A POSTROUTING -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu
+    success "MSS clamp применён"
+}
+
 configure_3proxy() {
     step "Генерация конфигурации ($PROXY_COUNT прокси)..."
 
@@ -875,6 +886,7 @@ main() {
         generate_ipv6
         add_ipv6_addresses
         configure_ipv6_kernel
+        configure_mss_clamp
     fi
 
     configure_3proxy
