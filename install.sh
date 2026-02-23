@@ -468,24 +468,27 @@ rotate 30
 maxconn 200
 
 auth strong
+authcache ip 1200
 
 EOF
-    if [[ "$PROXY_TYPE" == "ipv6" ]]; then
-        # IPv6 DNS - помогает, чтобы резолвилось в AAAA и "выход" был IPv6
-        echo "nserver 2606:4700:4700::1111" >> "$CONFIG_FILE"
-        echo "nserver 2606:4700:4700::1001" >> "$CONFIG_FILE"
-        echo "" >> "$CONFIG_FILE"
-    fi
+    # Смешанный DNS обычно стабильнее на разных VPS
+    echo "nserver 1.1.1.1" >> "$CONFIG_FILE"
+    echo "nserver 8.8.8.8" >> "$CONFIG_FILE"
+    echo "nserver 2606:4700:4700::1111" >> "$CONFIG_FILE"
+    echo "nserver 2606:4700:4700::1001" >> "$CONFIG_FILE"
+    echo "" >> "$CONFIG_FILE"
 
     PROXY_LOGINS=(); PROXY_PASSES=()
+    local users_line="users"
     for (( i=0; i<PROXY_COUNT; i++ )); do
         local login pass
         login="u$(printf '%04d' $((i+1)))_$(gen_random 6)"
         pass=$(gen_random 14)
         PROXY_LOGINS+=("$login")
         PROXY_PASSES+=("$pass")
-        echo "users ${login}:CL:${pass}" >> "$CONFIG_FILE"
+        users_line+=" ${login}:CL:${pass}"
     done
+    echo "$users_line" >> "$CONFIG_FILE"
 
     echo "" >> "$CONFIG_FILE"
     for (( i=0; i<PROXY_COUNT; i++ )); do
@@ -587,6 +590,19 @@ generate_panel_html() {
         warn "Файл $PROXY_LIST не найден, список прокси в панели будет пустым"
     fi
 
+    local escaped_proxies
+    escaped_proxies=$(python3 - <<PYEOF
+import html
+from pathlib import Path
+p = Path("${PROXY_LIST}")
+if p.exists():
+    txt = p.read_text(encoding="utf-8", errors="replace")
+    print(html.escape(txt))
+else:
+    print("")
+PYEOF
+    )
+
     cat > "${PANEL_DIR}/index.html" <<HTMLEOF
 <!DOCTYPE html>
 <html lang="ru">
@@ -595,205 +611,123 @@ generate_panel_html() {
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Панель прокси</title>
 <style>
-  :root{
-    --bg:#0b1220; --card:#111a2e; --line:#1f2a44; --text:#e6edf7; --muted:#93a4c7;
-    --cyan:#22d3ee; --green:#34d399; --yellow:#fbbf24; --red:#fb7185; --btn:#1d2a46;
+  :root {
+    --bg: #081226;
+    --card: #10203e;
+    --line: #1b3564;
+    --text: #e8f0ff;
+    --muted: #9db7e6;
+    --accent: #39b6ff;
+    --accent2: #7a7dff;
   }
-  *{box-sizing:border-box}
-  body{margin:0;background:linear-gradient(180deg,#070c16, var(--bg));color:var(--text);font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial}
-  a{color:var(--cyan);text-decoration:none}
-  .wrap{max-width:1100px;margin:0 auto;padding:18px}
-  .topbar{display:flex;gap:14px;align-items:center;justify-content:space-between;padding:14px 16px;border:1px solid var(--line);background:rgba(17,26,46,.75);backdrop-filter:blur(8px);border-radius:14px}
-  .brand{display:flex;align-items:center;gap:12px}
-  .logo{width:36px;height:36px;border-radius:10px;background:linear-gradient(135deg,var(--cyan),#8b5cf6);display:flex;align-items:center;justify-content:center;color:#08101f;font-weight:800}
-  .title{font-weight:750;letter-spacing:.2px}
-  .sub{font-size:12px;color:var(--muted)}
-  .badges{display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end}
-  .badge{font-size:12px;padding:6px 10px;border-radius:999px;border:1px solid var(--line);background:rgba(29,42,70,.6);color:var(--text)}
-  .badge.cyan{border-color:rgba(34,211,238,.35);color:#a5f3fc;background:rgba(34,211,238,.10)}
-  .grid{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-top:14px}
-  .card{border:1px solid var(--line);background:rgba(17,26,46,.55);border-radius:14px;padding:12px 14px}
-  .card .k{font-size:12px;color:var(--muted);margin-bottom:6px}
-  .mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
-  .controls{display:flex;gap:10px;align-items:center;justify-content:space-between;margin-top:14px;flex-wrap:wrap}
-  .search{flex:1;min-width:240px;display:flex;gap:10px;align-items:center}
-  input[type="text"]{width:100%;padding:10px 12px;border-radius:12px;border:1px solid var(--line);background:rgba(11,18,32,.55);color:var(--text);outline:none}
-  input[type="text"]:focus{border-color:rgba(34,211,238,.55);box-shadow:0 0 0 3px rgba(34,211,238,.12)}
-  .btns{display:flex;gap:10px;flex-wrap:wrap}
-  button{cursor:pointer;border:none;border-radius:12px;padding:10px 12px;background:var(--btn);color:var(--text);border:1px solid var(--line);font-weight:650}
-  button:hover{filter:brightness(1.08)}
-  button.primary{background:linear-gradient(135deg,var(--cyan),#60a5fa);border:0;color:#071220}
-  button.ghost{background:transparent}
-  .list{margin-top:12px;border-radius:14px;border:1px solid var(--line);overflow:hidden;background:rgba(17,26,46,.45)}
-  .listhead{display:flex;justify-content:space-between;align-items:center;padding:10px 14px;border-bottom:1px solid var(--line);color:var(--muted);font-size:12px}
-  .rows{max-height:62vh;overflow:auto}
-  .row{display:flex;gap:12px;align-items:center;justify-content:space-between;padding:10px 14px;border-bottom:1px solid rgba(31,42,68,.55)}
-  .row:last-child{border-bottom:none}
-  .row:hover{background:rgba(29,42,70,.35)}
-  .copybtn{padding:8px 10px;border-radius:10px;font-size:12px;background:rgba(29,42,70,.8)}
-  .hint{margin-top:10px;color:var(--muted);font-size:12px;line-height:1.4}
-  .toast{position:fixed;right:16px;bottom:16px;min-width:180px;max-width:320px;padding:10px 12px;border-radius:12px;border:1px solid var(--line);background:rgba(17,26,46,.92);color:var(--text);display:none}
-  .toast.ok{border-color:rgba(52,211,153,.35)}
-  .toast.bad{border-color:rgba(251,113,133,.35)}
-  @media (max-width: 900px){.grid{grid-template-columns:repeat(2,1fr)}}
-  @media (max-width: 520px){.grid{grid-template-columns:1fr}.badges{justify-content:flex-start}}
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: linear-gradient(180deg, #040b17, var(--bg));
+    color: var(--text);
+    font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
+  }
+  .wrap { max-width: 980px; margin: 0 auto; padding: 16px; }
+  .head {
+    display: flex; align-items: center; justify-content: space-between;
+    border: 1px solid var(--line); border-radius: 14px; padding: 14px 16px;
+    background: rgba(16,32,62,.75);
+  }
+  .title { font-size: 20px; font-weight: 800; }
+  .sub { font-size: 12px; color: var(--muted); margin-top: 2px; }
+  .badge {
+    border: 1px solid var(--line);
+    border-radius: 999px;
+    padding: 6px 10px;
+    font-size: 12px;
+    color: #bfe3ff;
+    background: rgba(57,182,255,.08);
+    margin-left: 8px;
+    display: inline-block;
+  }
+  .grid { display: grid; grid-template-columns: repeat(4,1fr); gap: 10px; margin-top: 12px; }
+  .card { border: 1px solid var(--line); background: rgba(16,32,62,.65); border-radius: 12px; padding: 10px 12px; }
+  .k { font-size: 11px; color: var(--muted); }
+  .v { margin-top: 5px; font-weight: 700; }
+  .controls { margin-top: 12px; display: flex; gap: 8px; flex-wrap: wrap; }
+  .btn {
+    border: 1px solid var(--line); background: #173060; color: var(--text);
+    border-radius: 10px; padding: 9px 12px; cursor: pointer; font-weight: 700;
+  }
+  .btn.primary { background: linear-gradient(135deg, var(--accent), var(--accent2)); color: #061224; border: 0; }
+  .btn:hover { filter: brightness(1.08); }
+  .list {
+    margin-top: 12px; border: 1px solid var(--line); border-radius: 12px; overflow: hidden;
+    background: rgba(16,32,62,.55);
+  }
+  .list-head {
+    padding: 10px 12px; font-size: 12px; color: var(--muted); border-bottom: 1px solid var(--line);
+    display: flex; justify-content: space-between;
+  }
+  textarea {
+    width: 100%; min-height: 360px; resize: vertical; border: 0;
+    background: transparent; color: var(--text); padding: 12px;
+    font: 13px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    outline: none;
+  }
+  .hint { margin-top: 8px; color: var(--muted); font-size: 12px; }
+  @media (max-width: 840px) { .grid { grid-template-columns: repeat(2,1fr); } }
+  @media (max-width: 520px) { .grid { grid-template-columns: 1fr; } }
 </style>
 </head>
 <body>
 <div class="wrap">
-  <div class="topbar">
-    <div class="brand">
-      <div class="logo">P</div>
-      <div>
-        <div class="title">Панель прокси</div>
-        <div class="sub mono">${ip}</div>
-      </div>
+  <div class="head">
+    <div>
+      <div class="title">Панель прокси</div>
+      <div class="sub">${ip}</div>
     </div>
-    <div class="badges">
-      <div class="badge cyan">${ptype^^} ${pproto^^}</div>
+    <div>
+      <span class="badge">${ptype^^} ${pproto^^}</span>
       <div class="badge">${pcount} шт.</div>
     </div>
   </div>
 
   <div class="grid">
-    <div class="card">
-      <div class="k">Сервер</div>
-      <div class="mono" style="color:var(--cyan)">${ip}</div>
-    </div>
-    <div class="card">
-      <div class="k">Тип</div>
-      <div style="font-weight:750">${ptype^^} ${pproto^^}</div>
-    </div>
-    <div class="card">
-      <div class="k">Количество</div>
-      <div style="font-weight:750">${pcount}</div>
-    </div>
-    <div class="card">
-      <div class="k">Формат</div>
-      <div class="mono" style="font-size:12px">${fmt}</div>
-    </div>
+    <div class="card"><div class="k">Сервер</div><div class="v">${ip}</div></div>
+    <div class="card"><div class="k">Тип</div><div class="v">${ptype^^} ${pproto^^}</div></div>
+    <div class="card"><div class="k">Количество</div><div class="v">${pcount}</div></div>
+    <div class="card"><div class="k">Формат</div><div class="v">${fmt}</div></div>
   </div>
 
   <div class="controls">
-    <div class="search">
-      <input id="searchInput" type="text" placeholder="Поиск по списку..." oninput="filterProxies()">
-    </div>
-    <div class="btns">
-      <button class="primary" onclick="copyAll()">Копировать всё</button>
-      <button onclick="downloadTxt()">Скачать .txt</button>
-      <button class="ghost" onclick="clearSearch()">Сброс</button>
-    </div>
+    <button class="btn primary" onclick="copyAll()">Копировать всё</button>
+    <a class="btn" href="./proxies.txt" download="proxies.txt">Скачать .txt</a>
+    <button class="btn" onclick="window.location.reload()">Обновить</button>
   </div>
 
   <div class="list">
-    <div class="listhead">
+    <div class="list-head">
       <span>Список прокси</span>
-      <span>Показано: <span id="visibleCount">${pcount}</span></span>
+      <span>${pcount} записей</span>
     </div>
-    <div id="proxyList" class="rows"></div>
+    <textarea id="proxyText" readonly>${escaped_proxies}</textarea>
   </div>
 
-  <div class="hint">
-    Если вы проверяете "выходной IP" для IPv6-прокси - используйте IPv6-доступные сайты (например, <span class="mono">api64.ipify.org</span>).
-    На обычных IPv4-only сайтах всегда будет показываться IPv4.
-  </div>
+  <div class="hint">Проверка IPv6 выхода: используйте IPv6-доступные сайты (например, api64.ipify.org).</div>
 </div>
-
-<div id="toast" class="toast"></div>
 <script>
-let proxies = [];
-let filtered = [];
-
-function toast(msg, ok=true) {
-  const t = document.getElementById('toast');
-  t.className = 'toast ' + (ok ? 'ok' : 'bad');
-  t.textContent = msg;
-  t.style.display = 'block';
-  clearTimeout(window.__toastTimer);
-  window.__toastTimer = setTimeout(() => (t.style.display = 'none'), 1600);
-}
-
-function copyFallback(text) {
-  const ta = document.createElement('textarea');
-  ta.value = text;
-  ta.setAttribute('readonly', '');
-  ta.style.position = 'fixed';
-  ta.style.top = '-1000px';
-  document.body.appendChild(ta);
-  ta.select();
-  ta.setSelectionRange(0, ta.value.length);
-  let ok = false;
-  try { ok = document.execCommand('copy'); } catch (e) { ok = false; }
-  document.body.removeChild(ta);
-  return ok;
-}
-
-async function copyText(text) {
-  try {
-    if (navigator.clipboard && window.isSecureContext) {
-      await navigator.clipboard.writeText(text);
-      toast('Скопировано');
-      return true;
-    }
-  } catch (e) {}
-  const ok = copyFallback(text);
-  toast(ok ? 'Скопировано' : 'Не удалось скопировать', ok);
-  return ok;
-}
-
-function renderList(list) {
-  const c = document.getElementById('proxyList');
-  if (!list.length) {
-    c.innerHTML = '<div class="row" style="justify-content:center;color:var(--muted)">Список пуст</div>';
+function copyAll() {
+  const box = document.getElementById('proxyText');
+  const text = box.value || box.textContent || "";
+  if (!text.trim()) {
+    alert("Список пуст");
     return;
   }
-  c.innerHTML = list.map((p) => {
-    const safe = p.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
-    return (
-      '<div class="row">' +
-        '<span class="mono" style="font-size:13px;word-break:break-all">' + safe + '</span>' +
-        '<button class="copybtn" onclick="copyText(\\'' + p.replace(/\\/g,'\\\\').replace(/'/g,\"\\\\'\") + '\\')">копировать</button>' +
-      '</div>'
-    );
-  }).join('');
-}
-function filterProxies() {
-  const q = document.getElementById('searchInput').value.toLowerCase();
-  filtered = q ? proxies.filter(p => p.toLowerCase().includes(q)) : [...proxies];
-  document.getElementById('visibleCount').textContent = filtered.length;
-  renderList(filtered);
-}
-function clearSearch() { document.getElementById('searchInput').value=''; filterProxies(); }
-function copyAll() { copyText(filtered.join('\\n')); }
-function downloadTxt() {
-  // Качаем оригинальный файл, который лежит рядом с панелью.
-  const a = document.createElement('a');
-  a.href = './proxies.txt';
-  a.download = 'proxies.txt';
-  document.body.appendChild(a);
-  a.click();
-  document.body.removeChild(a);
-}
-
-async function loadProxies() {
-  try {
-    const res = await fetch('./proxies.txt?ts=' + Date.now(), { cache: 'no-store' });
-    if (!res.ok) throw new Error('HTTP ' + res.status);
-    const txt = await res.text();
-    proxies = txt.split(/\\r?\\n/).map(s => s.trim()).filter(Boolean);
-    filtered = [...proxies];
-    document.getElementById('visibleCount').textContent = filtered.length;
-    renderList(filtered);
-  } catch (e) {
-    proxies = [];
-    filtered = [];
-    document.getElementById('visibleCount').textContent = '0';
-    renderList([]);
-    toast('Не удалось загрузить список proxies.txt', false);
+  if (navigator.clipboard && window.isSecureContext) {
+    navigator.clipboard.writeText(text).then(() => alert("Скопировано"));
+    return;
   }
+  box.focus();
+  box.select();
+  try { document.execCommand("copy"); alert("Скопировано"); }
+  catch (e) { alert("Не удалось скопировать. Скопируйте вручную."); }
 }
-
-loadProxies();
 </script>
 </body>
 </html>
@@ -815,14 +749,13 @@ server {
     listen [::]:80 default_server;
     server_name _;
 
-    root /var/www/html;
-    index index.html;
-
     location /panel/ {
+        alias /var/www/html/panel/;
+        index index.html;
         auth_basic "Proxy Panel";
         auth_basic_user_file /etc/nginx/.htpasswd-panel;
     }
-    location /panel { return 301 /panel/; }
+    location = /panel { return 301 /panel/; }
     location = / { return 301 /panel/; }
 }
 EOF
