@@ -10,9 +10,7 @@
 
 ## Установка одной командой
 
-```bash
-bash <(curl -s https://raw.githubusercontent.com/ВАШ_ЛОГИН/proxy-installer/main/install.sh)
-```
+curl -sL https://raw.githubusercontent.com/flannaganjosephine924/proxy-installer/main/install.sh | tr -d '\r' | bash
 
 > Замените `ВАШ_ЛОГИН` на ваш GitHub username.
 
