@@ -36,6 +36,8 @@ SERVER_IPV4=""
 NET_INTERFACE=""
 IPV6_ADDR=""
 IPV6_PREFIX_LEN="64"
+IPV6_PREFIX64=""
+IPV6_CAN_MULTI="unknown" # yes/no/unknown
 PANEL_USER="admin"
 PANEL_PASS=""
 declare -a IPV6_ADDRESSES=()
@@ -227,7 +229,6 @@ step_confirm() {
         echo -e "  ${WHITE}     - Скрипт сам проверит: можно ли делать много IPv6 (1 порт = 1 IPv6)${NC}"
         echo -e "  ${WHITE}       Если провайдер режет доп. IPv6, включится стабильный режим (1 IPv6 на все порты)${NC}"
         echo -e "  ${WHITE}       (строго без fallback: запусти с IPV6_STRICT=1)${NC}"
-        echo -e "  ${YELLOW}     [!] Рекомендуется: Hetzner, Vultr, DigitalOcean, Aeza${NC}"
     fi
     if [[ "$PROXY_TYPE" == "ipv6" ]]; then
         echo -e "  ${WHITE}     - IPv6 адреса + forwarding${NC}"
@@ -351,6 +352,82 @@ detect_network() {
     success "Сетевые параметры определены"
 }
 
+get_ipv6_gateway() {
+    ip -6 route show default 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="via"){print $(i+1); exit}}'
+}
+
+get_main_ipv6() {
+    # Первый глобальный IPv6 (не link-local, не temporary)
+    ip -6 addr show dev "$NET_INTERFACE" 2>/dev/null | awk '/inet6/ && $2 !~ /^fe80:/ && $0 !~ /temporary/ {print $2; exit}' | cut -d/ -f1
+}
+
+random_ipv6_from_prefix64() {
+    local prefix64="$1"
+    python3 - <<PYEOF
+import ipaddress, random
+net = ipaddress.IPv6Network("${prefix64}/64", strict=False)
+print(str(net.network_address + random.randint(2, (2**64) - 2)))
+PYEOF
+}
+
+ipv6_egress_test_random() {
+    # Печатает ДА/ОШИБКА прямо в терминал (PuTTY)
+    step "Тест мульти-IPv6 (случайный адрес из /64)..."
+
+    local gw6 main6 test6
+    gw6=$(get_ipv6_gateway)
+    if [[ -z "$gw6" ]]; then
+        echo -e "  ${RED}[X] ОШИБКА: не найден IPv6 шлюз по умолчанию${NC}"
+        IPV6_CAN_MULTI="no"
+        return 1
+    fi
+
+    main6=$(get_main_ipv6)
+    if [[ -z "$main6" ]]; then
+        echo -e "  ${RED}[X] ОШИБКА: не найден основной IPv6 на интерфейсе${NC}"
+        IPV6_CAN_MULTI="no"
+        return 1
+    fi
+
+    IPV6_PREFIX64=$(python3 - <<PYEOF
+import ipaddress
+print(ipaddress.IPv6Network("${main6}/64", strict=False).network_address)
+PYEOF
+    )
+
+    test6=$(random_ipv6_from_prefix64 "$IPV6_PREFIX64")
+    info "IFACE=$NET_INTERFACE  GW6=$gw6"
+    info "MAIN6=$main6  PREFIX64=${IPV6_PREFIX64}::/64"
+    info "TEST6=$test6"
+
+    # включаем proxy_ndp (на всякий) и пробуем policy routing в таблице 100
+    sysctl -w "net.ipv6.conf.${NET_INTERFACE}.proxy_ndp=1" net.ipv6.conf.all.proxy_ndp=1 >/dev/null 2>&1 || true
+
+    ip -6 addr add "${test6}/128" dev "$NET_INTERFACE" nodad 2>/dev/null || true
+    ip -6 neigh replace proxy "${test6}" dev "$NET_INTERFACE" 2>/dev/null || true
+    ip -6 route replace local "${test6}/128" dev "$NET_INTERFACE" 2>/dev/null || true
+    ip -6 rule add from "${test6}/128" table 100 pref 1000 2>/dev/null || true
+    ip -6 route replace default via "$gw6" dev "$NET_INTERFACE" table 100 2>/dev/null || true
+
+    if curl -6 --interface "$test6" -m 10 -s https://api64.ipify.org >/dev/null 2>&1; then
+        echo -e "  ${GREEN}[OK] ДА: доп.IPv6 выходит в интернет${NC}"
+        IPV6_CAN_MULTI="yes"
+        rc=0
+    else
+        echo -e "  ${RED}[X] ОШИБКА: доп.IPv6 НЕ выходит (мульти-IPv6 на этом хостере не работает)${NC}"
+        IPV6_CAN_MULTI="no"
+        rc=1
+    fi
+
+    # cleanup
+    ip -6 rule del from "${test6}/128" table 100 pref 1000 2>/dev/null || true
+    ip -6 route flush table 100 2>/dev/null || true
+    ip -6 route del local "${test6}/128" dev "$NET_INTERFACE" 2>/dev/null || true
+    ip -6 neigh del proxy "${test6}" dev "$NET_INTERFACE" 2>/dev/null || true
+    ip -6 addr del "${test6}/128" dev "$NET_INTERFACE" 2>/dev/null || true
+    return $rc
+}
+
 
 generate_ipv6() {
     step "Генерация $PROXY_COUNT IPv6 адресов..."
@@ -395,50 +472,22 @@ add_ipv6_addresses() {
 
     # Шлюз провайдера — нужен для каждой таблицы маршрутизации
     local gw6
-    gw6=$(ip -6 route show default | awk '{for(i=1;i<=NF;i++){if($i=="via"){print $(i+1); exit}}}')
+    gw6=$(get_ipv6_gateway)
     if [[ -z "$gw6" ]]; then
         err "Не найден IPv6 шлюз по умолчанию. Проверьте IPv6 на интерфейсе."
         exit 1
     fi
     info "IPv6 шлюз: $gw6"
 
-    # --- Быстрая проверка: работает ли выход с доп. IPv6 при policy routing ---
-    if (( PROXY_COUNT > 1 )); then
-        local test_addr="${IPV6_ADDRESSES[0]:-}"
-        if [[ -z "$test_addr" ]]; then
-            err "Не удалось взять тестовый IPv6 адрес."
-            exit 1
-        fi
-
-        step "Тест IPv6 выхода (доп. адрес)..."
-        # временно добавим адрес + policy routing, проверим egress, затем уберём
-        ip -6 addr add "${test_addr}/128" dev "$NET_INTERFACE" nodad 2>/dev/null || true
-        ip -6 neigh replace proxy "${test_addr}" dev "$NET_INTERFACE" 2>/dev/null || true
-        ip -6 route replace local "${test_addr}/128" dev "$NET_INTERFACE" 2>/dev/null || true
-        ip -6 rule add from "${test_addr}/128" table 100 pref 1000 2>/dev/null || true
-        ip -6 route replace default via "$gw6" dev "$NET_INTERFACE" table 100 2>/dev/null || true
-
-        if curl -6 -s --interface "$test_addr" --max-time 8 https://api64.ipify.org >/dev/null 2>&1; then
-            success "Доп. IPv6 выходит в интернет — включаем режим 1 порт = 1 IPv6"
-        else
-            if [[ "$IPV6_STRICT" == "1" ]]; then
-                err "Доп. IPv6 НЕ выходит в интернет даже с policy routing."
-                err "На этом VPS мульти-IPv6 прокси не заработает (фильтр/маршрутизация у провайдера)."
-                exit 1
-            fi
-            warn "Доп. IPv6 НЕ выходит в интернет даже с policy routing."
-            warn "Переключаемся на стабильный режим: 1 IPv6 на все порты (иначе прокси будут отваливаться)."
-            local i
-            for (( i=0; i<PROXY_COUNT; i++ )); do
-                IPV6_ADDRESSES[$i]="$IPV6_ADDR"
-            done
-        fi
-
-        ip -6 rule del from "${test_addr}/128" table 100 pref 1000 2>/dev/null || true
-        ip -6 route flush table 100 2>/dev/null || true
-        ip -6 route del local "${test_addr}/128" dev "$NET_INTERFACE" 2>/dev/null || true
-        ip -6 neigh del proxy "${test_addr}" dev "$NET_INTERFACE" 2>/dev/null || true
-        ip -6 addr del "${test_addr}/128" dev "$NET_INTERFACE" 2>/dev/null || true
+    # Если мульти-IPv6 не поддерживается — не плодим rules/tables, просто выходим.
+    if [[ "$IPV6_CAN_MULTI" == "no" ]]; then
+        warn "Мульти-IPv6 недоступен на этом хостере. Прокси будут с одним IPv6."
+        cat > "$IPV6_SCRIPT" <<SCRIPT
+#!/bin/bash
+exit 0
+SCRIPT
+        chmod +x "$IPV6_SCRIPT"
+        return 0
     fi
 
     # Записываем скрипт (заголовок)
@@ -644,8 +693,9 @@ EOF
         echo "allow ${PROXY_LOGINS[$i]}" >> "$CONFIG_FILE"
         
         if [[ "$PROXY_TYPE" == "ipv6" ]]; then
-            # external задаёт исходящий IP. В single-режиме он один для всех портов.
+            # Приоритет IPv6, но для IPv4-only сайтов даём fallback на IPv4
             echo "external ${IPV6_ADDRESSES[$i]}" >> "$CONFIG_FILE"
+            echo "external ${SERVER_IPV4}" >> "$CONFIG_FILE"
             if [[ "$PROXY_PROTOCOL" == "http" ]]; then
                 echo "proxy -64 -p${port} -i0.0.0.0" >> "$CONFIG_FILE"
             else
@@ -1014,7 +1064,19 @@ main() {
     detect_network
 
     if [[ "$PROXY_TYPE" == "ipv6" ]]; then
-        generate_ipv6
+        # 1) Определяем, может ли хостер мульти-IPv6 (печатает ДА/ОШИБКА в терминал)
+        ipv6_egress_test_random || true
+
+        # 2) Генерация адресов (если мульти-IPv6 не работает — сделаем один IPv6 на все порты)
+        if [[ "$IPV6_CAN_MULTI" == "yes" ]]; then
+            generate_ipv6
+        else
+            IPV6_ADDRESSES=()
+            for (( i=0; i<PROXY_COUNT; i++ )); do
+                IPV6_ADDRESSES+=("$IPV6_ADDR")
+            done
+        fi
+
         configure_ipv6_kernel
         add_ipv6_addresses
         configure_ipv6_routing
