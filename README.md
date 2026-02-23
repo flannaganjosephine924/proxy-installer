@@ -63,7 +63,6 @@ HTTP:
 curl -s -x "http://LOGIN:PASS@IP:PORT" https://api64.ipify.org
 ```
 
-```bash
-Подписывайтесь на канал: https://t.me/dmgoogleads
-```
+## Подписывайтесь на канал: https://t.me/dmgoogleads
+
 
