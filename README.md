@@ -10,9 +10,19 @@
 
 ## Установка одной командой
 
-curl -sL https://raw.githubusercontent.com/flannaganjosephine924/proxy-installer/main/install.sh | tr -d '\r' | bash
+Скопируйте и вставьте в терминал (SSH, MobaXterm и т.п.):
 
-> Замените `ВАШ_ЛОГИН` на ваш GitHub username.
+```bash
+curl -sL https://raw.githubusercontent.com/ВАШ_ЛОГИН/proxy-installer/main/install.sh -o /tmp/install.sh && sed -i 's/\r$//' /tmp/install.sh && bash /tmp/install.sh
+```
+
+Если `curl` не установлен, попробуйте:
+
+```bash
+wget -qO /tmp/install.sh https://raw.githubusercontent.com/ВАШ_ЛОГИН/proxy-installer/main/install.sh && sed -i 's/\r$//' /tmp/install.sh && bash /tmp/install.sh
+```
+
+> Замените `ВАШ_ЛОГИН` на ваш GitHub username. Если ветка `master`, замените `main` на `master`.
 
 ---
 
