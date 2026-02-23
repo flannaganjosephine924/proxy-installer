@@ -31,6 +31,7 @@ PROXY_COUNT=1
 OUTPUT_FORMAT=1
 WANT_PANEL="no"
 START_PORT=10000
+IPV6_STRICT="${IPV6_STRICT:-0}"   # 1 = не делать fallback, падать с ошибкой
 SERVER_IPV4=""
 NET_INTERFACE=""
 IPV6_ADDR=""
@@ -77,7 +78,7 @@ print_banner() {
     echo "  +--------------------------------------------------+"
     echo "  |                                                  |"
     echo "  |             У С Т А Н О В Щ И К  П Р О К С И     |"
-    echo "  |             IPv4 / IPv6  -  Ubuntu 20/22/24      |"
+    echo "  |                 IPv4 / IPv6  -  Ubuntu 20/22/24  |"
     echo "  |                                                  |"
     echo "  +--------------------------------------------------+"
     echo -e "${NC}"
@@ -223,8 +224,11 @@ step_confirm() {
         echo -e "  ${GREEN}${BOLD}[OK] ДЛЯ IPv6:${NC}"
         echo -e "  ${WHITE}     - IPv6 включён в панели VPS${NC}"
         echo -e "  ${WHITE}     - Провайдер выдал /48 или /64 подсеть${NC}"
-        echo -e "  ${WHITE}     - Если пул /64 не маршрутизируется, установка остановится (иначе 1 порт = 1 IPv6 невозможно)${NC}"
-       if [[ "$PROXY_TYPE" == "ipv6" ]]; then
+        echo -e "  ${WHITE}     - Скрипт сам проверит: можно ли делать много IPv6 (1 порт = 1 IPv6)${NC}"
+        echo -e "  ${WHITE}       Если провайдер режет доп. IPv6, включится стабильный режим (1 IPv6 на все порты)${NC}"
+        echo -e "  ${WHITE}       (строго без fallback: запусти с IPV6_STRICT=1)${NC}"
+        echo -e "  ${YELLOW}     [!] Рекомендуется: Hetzner, Vultr, DigitalOcean, Aeza${NC}"
+    if [[ "$PROXY_TYPE" == "ipv6" ]]; then
         echo -e "  ${WHITE}     - IPv6 адреса + forwarding${NC}"
     fi
     if [[ "$WANT_PANEL" == "yes" ]]; then
@@ -390,12 +394,51 @@ add_ipv6_addresses() {
 
     # Шлюз провайдера — нужен для каждой таблицы маршрутизации
     local gw6
-    gw6=$(ip -6 route show default | awk '{print $3; exit}')
+    gw6=$(ip -6 route show default | awk '{for(i=1;i<=NF;i++){if($i=="via"){print $(i+1); exit}}}')
     if [[ -z "$gw6" ]]; then
         err "Не найден IPv6 шлюз по умолчанию. Проверьте IPv6 на интерфейсе."
         exit 1
     fi
     info "IPv6 шлюз: $gw6"
+
+    # --- Быстрая проверка: работает ли выход с доп. IPv6 при policy routing ---
+    if (( PROXY_COUNT > 1 )); then
+        local test_addr="${IPV6_ADDRESSES[0]:-}"
+        if [[ -z "$test_addr" ]]; then
+            err "Не удалось взять тестовый IPv6 адрес."
+            exit 1
+        fi
+
+        step "Тест IPv6 выхода (доп. адрес)..."
+        # временно добавим адрес + policy routing, проверим egress, затем уберём
+        ip -6 addr add "${test_addr}/128" dev "$NET_INTERFACE" nodad 2>/dev/null || true
+        ip -6 neigh replace proxy "${test_addr}" dev "$NET_INTERFACE" 2>/dev/null || true
+        ip -6 route replace local "${test_addr}/128" dev "$NET_INTERFACE" 2>/dev/null || true
+        ip -6 rule add from "${test_addr}/128" table 100 pref 1000 2>/dev/null || true
+        ip -6 route replace default via "$gw6" dev "$NET_INTERFACE" table 100 2>/dev/null || true
+
+        if curl -6 -s --interface "$test_addr" --max-time 8 https://api64.ipify.org >/dev/null 2>&1; then
+            success "Доп. IPv6 выходит в интернет — включаем режим 1 порт = 1 IPv6"
+        else
+            if [[ "$IPV6_STRICT" == "1" ]]; then
+                err "Доп. IPv6 НЕ выходит в интернет даже с policy routing."
+                err "На этом VPS мульти-IPv6 прокси не заработает (фильтр/маршрутизация у провайдера)."
+                exit 1
+            fi
+            warn "Доп. IPv6 НЕ выходит в интернет даже с policy routing."
+            warn "Переключаемся на стабильный режим: 1 IPv6 на все порты (иначе прокси будут отваливаться)."
+            local i
+            for (( i=0; i<PROXY_COUNT; i++ )); do
+                IPV6_ADDRESSES[$i]="$IPV6_ADDR"
+            done
+        fi
+
+        ip -6 rule del from "${test_addr}/128" table 100 pref 1000 2>/dev/null || true
+        ip -6 route flush table 100 2>/dev/null || true
+        ip -6 route del local "${test_addr}/128" dev "$NET_INTERFACE" 2>/dev/null || true
+        ip -6 neigh del proxy "${test_addr}" dev "$NET_INTERFACE" 2>/dev/null || true
+        ip -6 addr del "${test_addr}/128" dev "$NET_INTERFACE" 2>/dev/null || true
+    fi
 
     # Записываем скрипт (заголовок)
     cat > "$IPV6_SCRIPT" <<SCRIPT
@@ -417,14 +460,20 @@ SCRIPT
         cat >> "$IPV6_SCRIPT" <<ADDR
 # proxy $((i+1)): $addr
 ip -6 addr add ${addr}/128 dev \$IFACE nodad 2>/dev/null
+ip -6 neigh replace proxy ${addr} dev \$IFACE 2>/dev/null
+ip -6 route replace local ${addr}/128 dev \$IFACE 2>/dev/null
+ip -6 rule del from ${addr}/128 table ${table} pref ${prio} 2>/dev/null
 ip -6 rule add from ${addr}/128 table ${table} pref ${prio} 2>/dev/null
-ip -6 route add default via \$GW6 dev \$IFACE table ${table} 2>/dev/null
+ip -6 route replace default via \$GW6 dev \$IFACE table ${table} 2>/dev/null
 ADDR
 
         # --- Применяем сейчас ---
         ip -6 addr add "${addr}/128" dev "$NET_INTERFACE" nodad 2>/dev/null || true
+        ip -6 neigh replace proxy "${addr}" dev "$NET_INTERFACE" 2>/dev/null || true
+        ip -6 route replace local "${addr}/128" dev "$NET_INTERFACE" 2>/dev/null || true
+        ip -6 rule del from "${addr}/128" table "$table" pref "$prio" 2>/dev/null || true
         ip -6 rule add from "${addr}/128" table "$table" pref "$prio" 2>/dev/null || true
-        ip -6 route add default via "$gw6" dev "$NET_INTERFACE" table "$table" 2>/dev/null || true
+        ip -6 route replace default via "$gw6" dev "$NET_INTERFACE" table "$table" 2>/dev/null || true
 
         (( count++ ))
         if (( count % 50 == 0 )); then
