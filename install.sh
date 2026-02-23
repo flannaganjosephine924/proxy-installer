@@ -27,7 +27,6 @@ PANEL_CREDS="/root/panel_credentials.txt"
 
 PROXY_TYPE=""
 PROXY_PROTOCOL="socks5"
-IPV6_EGRESS_MODE="dual" # dual = IPv4+IPv6, strict = только IPv6
 PROXY_COUNT=1
 OUTPUT_FORMAT=1
 WANT_PANEL="no"
@@ -108,10 +107,10 @@ step_proxy_type() {
     echo -e "  ${WHITE}${BOLD}Шаг 1 из 6 - Тип прокси${NC}\n"
     print_line; echo ""
     echo -e "  ${GREEN}[1]${NC}  ${WHITE}${BOLD}IPv4${NC}  - одна прокси, выход через IPv4 сервера"
-    echo -e "       ${YELLOW}172.233.96.133:10000:login:password${NC}\n"
+    echo -e "       ${YELLOW}IP:PORT:login:password${NC}\n"
     echo -e "  ${GREEN}[2]${NC}  ${WHITE}${BOLD}IPv6${NC}  - много прокси, каждая с уникальным IPv6"
-    echo -e "       ${YELLOW}172.233.96.133:10001:login1:pass1  <- разные IP${NC}"
-    echo -e "       ${YELLOW}172.233.96.133:10002:login2:pass2${NC}"
+    echo -e "       ${YELLOW}IP:PORT:login1:pass1  <- разные IP${NC}"
+    echo -e "       ${YELLOW}IP:PORT:login2:pass2${NC}"
     echo ""; print_line; echo ""
     while true; do
         echo -ne "  ${WHITE}Ваш выбор (1 или 2): ${NC}"; read -r ch
@@ -163,43 +162,18 @@ step_protocol() {
     done
 }
 
-step_ipv6_mode() {
-    if [[ "$PROXY_TYPE" != "ipv6" ]]; then
-        IPV6_EGRESS_MODE="dual"
-        return
-    fi
-    print_banner
-    echo -e "  ${WHITE}${BOLD}Шаг 4 из 7 - Режим выхода IPv6${NC}\n"
-    print_line; echo ""
-    echo -e "  ${GREEN}[1]${NC}  ${WHITE}${BOLD}Совместимый (IPv4+IPv6)${NC}"
-    echo -e "       ${YELLOW}Работает в любых программах и на любых сайтах.${NC}"
-    echo -e "       ${YELLOW}На IPv4-only сайтах будет показываться IPv4 (это нормально).${NC}\n"
-    echo -e "  ${GREEN}[2]${NC}  ${WHITE}${BOLD}Строгий IPv6 (только IPv6)${NC}"
-    echo -e "       ${YELLOW}На IPv6-сайтах всегда будет IPv6.${NC}"
-    echo -e "       ${YELLOW}IPv4-only сайты открываться не будут.${NC}"
-    echo ""; print_line; echo ""
-    while true; do
-        echo -ne "  ${WHITE}Ваш выбор (1 или 2): ${NC}"; read -r ch
-        case $ch in
-            1) IPV6_EGRESS_MODE="dual"; break ;;
-            2) IPV6_EGRESS_MODE="strict"; break ;;
-            *) err "Введите 1 или 2" ;;
-        esac
-    done
-}
-
 step_format() {
     print_banner
-    echo -e "  ${WHITE}${BOLD}Шаг 5 из 7 - Формат вывода${NC}\n"
+    echo -e "  ${WHITE}${BOLD}Шаг 4 из 6 - Формат вывода${NC}\n"
     print_line; echo ""
     echo -e "  ${GREEN}[1]${NC}  ${WHITE}IP:PORT:LOGIN:PASS${NC}"
-    echo -e "       ${YELLOW}172.233.96.133:10001:mylogin:mypassword${NC}\n"
+    echo -e "       ${YELLOW}IP:PORT:mylogin:mypassword${NC}\n"
     echo -e "  ${GREEN}[2]${NC}  ${WHITE}IP:PORT@LOGIN:PASS${NC}"
-    echo -e "       ${YELLOW}172.233.96.133:10001@mylogin:mypassword${NC}\n"
+    echo -e "       ${YELLOW}IP:PORT@mylogin:mypassword${NC}\n"
     echo -e "  ${GREEN}[3]${NC}  ${WHITE}LOGIN:PASS@IP:PORT${NC}"
-    echo -e "       ${YELLOW}mylogin:mypassword@172.233.96.133:10001${NC}\n"
+    echo -e "       ${YELLOW}mylogin:mypassword@IP:PORT${NC}\n"
     echo -e "  ${GREEN}[4]${NC}  ${WHITE}LOGIN:PASS:IP:PORT${NC}"
-    echo -e "       ${YELLOW}mylogin:mypassword:172.233.96.133:10001${NC}"
+    echo -e "       ${YELLOW}mylogin:mypassword:IP:PORT${NC}"
     echo ""; print_line; echo ""
     while true; do
         echo -ne "  ${WHITE}Ваш выбор (1/2/3/4): ${NC}"; read -r ch
@@ -212,7 +186,7 @@ step_format() {
 
 step_panel() {
     print_banner
-    echo -e "  ${WHITE}${BOLD}Шаг 6 из 7 - Веб-панель${NC}\n"
+    echo -e "  ${WHITE}${BOLD}Шаг 5 из 6 - Веб-панель${NC}\n"
     print_line; echo ""
     echo -e "  Установить веб-панель для просмотра прокси?"
     echo ""
@@ -238,7 +212,7 @@ step_panel() {
 
 step_confirm() {
     print_banner
-    echo -e "  ${WHITE}${BOLD}Шаг 7 из 7 - Проверка перед установкой${NC}\n"
+    echo -e "  ${WHITE}${BOLD}Шаг 6 из 6 - Проверка перед установкой${NC}\n"
     print_line; echo ""
     echo -e "  ${GREEN}${BOLD}[OK] ТРЕБОВАНИЯ:${NC}"
     echo -e "  ${WHITE}     - Ubuntu 20.04 / 22.04 / 24.04 LTS${NC}"
@@ -270,9 +244,6 @@ step_confirm() {
     echo -e "  ${CYAN}  Количество: ${WHITE}$PROXY_COUNT${NC}"
     echo -e "  ${CYAN}  Формат:     ${WHITE}$(format_name)${NC}"
     echo -e "  ${CYAN}  Порты:      ${WHITE}${START_PORT} - $((START_PORT + PROXY_COUNT - 1))${NC}"
-    if [[ "$PROXY_TYPE" == "ipv6" ]]; then
-        echo -e "  ${CYAN}  Режим IPv6: ${WHITE}$IPV6_EGRESS_MODE${NC}"
-    fi
     echo -e "  ${CYAN}  Панель:     ${WHITE}$WANT_PANEL${NC}"
     echo ""; print_line; echo ""
     while true; do
@@ -420,10 +391,12 @@ add_ipv6_addresses() {
 SCRIPT
     local count=0
     for addr in "${IPV6_ADDRESSES[@]}"; do
-        # Используем /128 и nodad, чтобы не забивать таблицу маршрутизации
-        # и не вызывать шторм DAD-пакетов, из-за которого хостинг блокирует порт
+        # Используем /128 и nodad, чтобы не забивать маршруты и не флудить DAD.
+        # NDP proxy обязателен на большинстве VPS, иначе IPv6 "отваливается" со временем.
         echo "ip -6 addr add ${addr}/128 dev $NET_INTERFACE nodad 2>/dev/null || true" >> "$IPV6_SCRIPT"
+        echo "ip -6 neigh add proxy ${addr} dev $NET_INTERFACE 2>/dev/null || ip -6 neigh replace proxy ${addr} dev $NET_INTERFACE 2>/dev/null || true" >> "$IPV6_SCRIPT"
         ip -6 addr add "${addr}/128" dev "$NET_INTERFACE" nodad 2>/dev/null || true
+        ip -6 neigh add proxy "${addr}" dev "$NET_INTERFACE" 2>/dev/null || ip -6 neigh replace proxy "${addr}" dev "$NET_INTERFACE" 2>/dev/null || true
         (( count++ ))
         if (( count % 100 == 0 )); then
             info "Добавлено $count / $PROXY_COUNT..."
@@ -513,6 +486,7 @@ configure_3proxy() {
     cat > "$CONFIG_FILE" <<EOF
 nscache 65536
 nscache6 65536
+timeouts 1 5 30 60 180 1800 15 60 15 5
 daemon
 pidfile /var/run/3proxy.pid
 log $LOG_DIR/3proxy.log D
@@ -543,22 +517,19 @@ EOF
         local port=$((START_PORT + i))
         echo "allow ${PROXY_LOGINS[$i]}" >> "$CONFIG_FILE"
         if [[ "$PROXY_TYPE" == "ipv6" ]]; then
-            if [[ "$IPV6_EGRESS_MODE" == "dual" ]]; then
-                echo "external $SERVER_IPV4" >> "$CONFIG_FILE"
-                echo "external ${IPV6_ADDRESSES[$i]}" >> "$CONFIG_FILE"
-            else
-                echo "external ${IPV6_ADDRESSES[$i]}" >> "$CONFIG_FILE"
-            fi
+            # Авто-режим: приоритет IPv6 (AAAA), если нет - fallback на IPv4 (A)
+            echo "external $SERVER_IPV4" >> "$CONFIG_FILE"
+            echo "external ${IPV6_ADDRESSES[$i]}" >> "$CONFIG_FILE"
         fi
         if [[ "$PROXY_PROTOCOL" == "http" ]]; then
-            if [[ "$PROXY_TYPE" == "ipv6" && "$IPV6_EGRESS_MODE" == "strict" ]]; then
-                echo "proxy -6 -i0.0.0.0 -p${port}" >> "$CONFIG_FILE"
+            if [[ "$PROXY_TYPE" == "ipv6" ]]; then
+                echo "proxy -64 -i0.0.0.0 -p${port}" >> "$CONFIG_FILE"
             else
                 echo "proxy -i0.0.0.0 -p${port}" >> "$CONFIG_FILE"
             fi
         else
-            if [[ "$PROXY_TYPE" == "ipv6" && "$IPV6_EGRESS_MODE" == "strict" ]]; then
-                echo "socks -6 -i0.0.0.0 -p${port}" >> "$CONFIG_FILE"
+            if [[ "$PROXY_TYPE" == "ipv6" ]]; then
+                echo "socks -64 -i0.0.0.0 -p${port}" >> "$CONFIG_FILE"
             else
                 echo "socks -i0.0.0.0 -p${port}" >> "$CONFIG_FILE"
             fi
@@ -889,7 +860,6 @@ main() {
     step_proxy_type
     step_proxy_count
     step_protocol
-    step_ipv6_mode
     step_format
     step_panel
     step_confirm
