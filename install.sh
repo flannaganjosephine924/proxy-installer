@@ -27,6 +27,7 @@ PANEL_CREDS="/root/panel_credentials.txt"
 
 PROXY_TYPE=""
 PROXY_PROTOCOL="socks5"
+IPV6_EGRESS_MODE="dual" # dual = IPv4+IPv6, strict = только IPv6
 PROXY_COUNT=1
 OUTPUT_FORMAT=1
 WANT_PANEL="no"
@@ -162,9 +163,34 @@ step_protocol() {
     done
 }
 
+step_ipv6_mode() {
+    if [[ "$PROXY_TYPE" != "ipv6" ]]; then
+        IPV6_EGRESS_MODE="dual"
+        return
+    fi
+    print_banner
+    echo -e "  ${WHITE}${BOLD}Шаг 4 из 7 - Режим выхода IPv6${NC}\n"
+    print_line; echo ""
+    echo -e "  ${GREEN}[1]${NC}  ${WHITE}${BOLD}Совместимый (IPv4+IPv6)${NC}"
+    echo -e "       ${YELLOW}Работает в любых программах и на любых сайтах.${NC}"
+    echo -e "       ${YELLOW}На IPv4-only сайтах будет показываться IPv4 (это нормально).${NC}\n"
+    echo -e "  ${GREEN}[2]${NC}  ${WHITE}${BOLD}Строгий IPv6 (только IPv6)${NC}"
+    echo -e "       ${YELLOW}На IPv6-сайтах всегда будет IPv6.${NC}"
+    echo -e "       ${YELLOW}IPv4-only сайты открываться не будут.${NC}"
+    echo ""; print_line; echo ""
+    while true; do
+        echo -ne "  ${WHITE}Ваш выбор (1 или 2): ${NC}"; read -r ch
+        case $ch in
+            1) IPV6_EGRESS_MODE="dual"; break ;;
+            2) IPV6_EGRESS_MODE="strict"; break ;;
+            *) err "Введите 1 или 2" ;;
+        esac
+    done
+}
+
 step_format() {
     print_banner
-    echo -e "  ${WHITE}${BOLD}Шаг 4 из 6 - Формат вывода${NC}\n"
+    echo -e "  ${WHITE}${BOLD}Шаг 5 из 7 - Формат вывода${NC}\n"
     print_line; echo ""
     echo -e "  ${GREEN}[1]${NC}  ${WHITE}IP:PORT:LOGIN:PASS${NC}"
     echo -e "       ${YELLOW}172.233.96.133:10001:mylogin:mypassword${NC}\n"
@@ -186,7 +212,7 @@ step_format() {
 
 step_panel() {
     print_banner
-    echo -e "  ${WHITE}${BOLD}Шаг 5 из 6 - Веб-панель${NC}\n"
+    echo -e "  ${WHITE}${BOLD}Шаг 6 из 7 - Веб-панель${NC}\n"
     print_line; echo ""
     echo -e "  Установить веб-панель для просмотра прокси?"
     echo ""
@@ -212,7 +238,7 @@ step_panel() {
 
 step_confirm() {
     print_banner
-    echo -e "  ${WHITE}${BOLD}Шаг 6 из 6 - Проверка перед установкой${NC}\n"
+    echo -e "  ${WHITE}${BOLD}Шаг 7 из 7 - Проверка перед установкой${NC}\n"
     print_line; echo ""
     echo -e "  ${GREEN}${BOLD}[OK] ТРЕБОВАНИЯ:${NC}"
     echo -e "  ${WHITE}     - Ubuntu 20.04 / 22.04 / 24.04 LTS${NC}"
@@ -244,6 +270,9 @@ step_confirm() {
     echo -e "  ${CYAN}  Количество: ${WHITE}$PROXY_COUNT${NC}"
     echo -e "  ${CYAN}  Формат:     ${WHITE}$(format_name)${NC}"
     echo -e "  ${CYAN}  Порты:      ${WHITE}${START_PORT} - $((START_PORT + PROXY_COUNT - 1))${NC}"
+    if [[ "$PROXY_TYPE" == "ipv6" ]]; then
+        echo -e "  ${CYAN}  Режим IPv6: ${WHITE}$IPV6_EGRESS_MODE${NC}"
+    fi
     echo -e "  ${CYAN}  Панель:     ${WHITE}$WANT_PANEL${NC}"
     echo ""; print_line; echo ""
     while true; do
@@ -514,13 +543,25 @@ EOF
         local port=$((START_PORT + i))
         echo "allow ${PROXY_LOGINS[$i]}" >> "$CONFIG_FILE"
         if [[ "$PROXY_TYPE" == "ipv6" ]]; then
-            echo "external $SERVER_IPV4" >> "$CONFIG_FILE"
-            echo "external ${IPV6_ADDRESSES[$i]}" >> "$CONFIG_FILE"
+            if [[ "$IPV6_EGRESS_MODE" == "dual" ]]; then
+                echo "external $SERVER_IPV4" >> "$CONFIG_FILE"
+                echo "external ${IPV6_ADDRESSES[$i]}" >> "$CONFIG_FILE"
+            else
+                echo "external ${IPV6_ADDRESSES[$i]}" >> "$CONFIG_FILE"
+            fi
         fi
         if [[ "$PROXY_PROTOCOL" == "http" ]]; then
-            echo "proxy -i0.0.0.0 -p${port}" >> "$CONFIG_FILE"
+            if [[ "$PROXY_TYPE" == "ipv6" && "$IPV6_EGRESS_MODE" == "strict" ]]; then
+                echo "proxy -6 -i0.0.0.0 -p${port}" >> "$CONFIG_FILE"
+            else
+                echo "proxy -i0.0.0.0 -p${port}" >> "$CONFIG_FILE"
+            fi
         else
-            echo "socks -i0.0.0.0 -p${port}" >> "$CONFIG_FILE"
+            if [[ "$PROXY_TYPE" == "ipv6" && "$IPV6_EGRESS_MODE" == "strict" ]]; then
+                echo "socks -6 -i0.0.0.0 -p${port}" >> "$CONFIG_FILE"
+            else
+                echo "socks -i0.0.0.0 -p${port}" >> "$CONFIG_FILE"
+            fi
         fi
         echo "flush" >> "$CONFIG_FILE"
         echo "" >> "$CONFIG_FILE"
@@ -848,6 +889,7 @@ main() {
     step_proxy_type
     step_proxy_count
     step_protocol
+    step_ipv6_mode
     step_format
     step_panel
     step_confirm
