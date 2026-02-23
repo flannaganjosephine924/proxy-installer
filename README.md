@@ -39,6 +39,16 @@ systemctl status 3proxy         # статус
 systemctl restart 3proxy        # перезапуск
 ```
 
+## Быстрый ремонт (если панель белая или прокси не работают)
+
+```bash
+sudo systemctl stop 3proxy 2>/dev/null; sleep 1
+sudo cp -f /tmp/3proxy-build/3proxy-*/bin/3proxy /etc/3proxy/3proxy 2>/dev/null || sudo cp -f /tmp/3proxy-build/3proxy-*/src/3proxy /etc/3proxy/3proxy 2>/dev/null
+sudo cp /root/proxy_list.txt /var/www/html/panel/proxies.txt
+sudo chown -R www-data:www-data /var/www/html/panel 2>/dev/null || sudo chown -R nginx:nginx /var/www/html/panel
+sudo systemctl restart 3proxy nginx
+```
+
 ### Проверка IPv6 "выхода"
 
 IPv6-прокси будут показывать IPv6 только на сайтах/ресурсах с поддержкой IPv6 (AAAA). Для проверки удобно использовать `api64.ipify.org`.
