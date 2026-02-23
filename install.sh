@@ -31,13 +31,14 @@ PROXY_COUNT=1
 OUTPUT_FORMAT=1
 WANT_PANEL="no"
 START_PORT=10000
-IPV6_STRICT="${IPV6_STRICT:-0}"   # 1 = не делать fallback, падать с ошибкой
+IPV6_STRICT="${IPV6_STRICT:-0}"   # 1 = если мульти-IPv6 не работает — остановить установку
 SERVER_IPV4=""
 NET_INTERFACE=""
 IPV6_ADDR=""
 IPV6_PREFIX_LEN="64"
 IPV6_PREFIX64=""
 IPV6_CAN_MULTI="unknown" # yes/no/unknown
+IPV6_MAIN_ADDR=""
 PANEL_USER="admin"
 PANEL_PASS=""
 declare -a IPV6_ADDRESSES=()
@@ -388,6 +389,7 @@ ipv6_egress_test_random() {
         IPV6_CAN_MULTI="no"
         return 1
     fi
+    IPV6_MAIN_ADDR="$main6"
 
     IPV6_PREFIX64=$(python3 - <<PYEOF
 import ipaddress
@@ -479,7 +481,7 @@ add_ipv6_addresses() {
     fi
     info "IPv6 шлюз: $gw6"
 
-    # Если мульти-IPv6 не поддерживается — не плодим rules/tables, просто выходим.
+    # Если мульти-IPv6 не поддерживается — не плодим rules/tables и не добавляем адреса.
     if [[ "$IPV6_CAN_MULTI" == "no" ]]; then
         warn "Мульти-IPv6 недоступен на этом хостере. Прокси будут с одним IPv6."
         cat > "$IPV6_SCRIPT" <<SCRIPT
@@ -693,13 +695,13 @@ EOF
         echo "allow ${PROXY_LOGINS[$i]}" >> "$CONFIG_FILE"
         
         if [[ "$PROXY_TYPE" == "ipv6" ]]; then
-            # Приоритет IPv6, но для IPv4-only сайтов даём fallback на IPv4
+            # Жёсткий IPv6: без fallback на IPv4.
+            # Важно: если у цели нет AAAA — сайт не откроется (это ожидаемо).
             echo "external ${IPV6_ADDRESSES[$i]}" >> "$CONFIG_FILE"
-            echo "external ${SERVER_IPV4}" >> "$CONFIG_FILE"
             if [[ "$PROXY_PROTOCOL" == "http" ]]; then
-                echo "proxy -64 -p${port} -i0.0.0.0" >> "$CONFIG_FILE"
+                echo "proxy -6 -n -a -p${port} -i0.0.0.0" >> "$CONFIG_FILE"
             else
-                echo "socks -64 -p${port} -i0.0.0.0" >> "$CONFIG_FILE"
+                echo "socks -6 -n -a -p${port} -i0.0.0.0" >> "$CONFIG_FILE"
             fi
         else
             # IPv4 прокси
@@ -1029,14 +1031,19 @@ print_results() {
     
     if [[ "$PROXY_TYPE" == "ipv6" ]]; then
         echo ""
-        echo -e "  ${GREEN}  Режим IPv6: 1 порт = 1 IPv6${NC}"
+        if [[ "$IPV6_CAN_MULTI" == "yes" ]]; then
+            echo -e "  ${GREEN}  Режим IPv6: 1 порт = 1 IPv6 (multi)${NC}"
+        else
+            echo -e "  ${YELLOW}  Режим IPv6: 1 IPv6 на все порты (fallback)${NC}"
+        fi
+        echo -e "  ${YELLOW}  IPv6 режим: STRICT (только IPv6, без IPv4)${NC}"
         echo ""
         echo -e "  ${WHITE}${BOLD}Проверка IPv6:${NC}"
         local test_port=$START_PORT
         local test_login="${PROXY_LOGINS[0]}"
         local test_pass="${PROXY_PASSES[0]}"
         if [[ "$PROXY_PROTOCOL" == "socks5" ]]; then
-            echo -e "  ${CYAN}  curl --socks5 ${test_login}:${test_pass}@${SERVER_IPV4}:${test_port} https://api64.ipify.org${NC}"
+            echo -e "  ${CYAN}  curl --socks5-hostname ${test_login}:${test_pass}@${SERVER_IPV4}:${test_port} https://api64.ipify.org${NC}"
         else
             echo -e "  ${CYAN}  curl -x http://${test_login}:${test_pass}@${SERVER_IPV4}:${test_port} https://api64.ipify.org${NC}"
         fi
@@ -1071,9 +1078,16 @@ main() {
         if [[ "$IPV6_CAN_MULTI" == "yes" ]]; then
             generate_ipv6
         else
+            # гарантируем, что берём реально рабочий основной IPv6
+            if [[ -z "${IPV6_MAIN_ADDR:-}" ]]; then
+                IPV6_MAIN_ADDR=$(get_main_ipv6 || true)
+            fi
+            if [[ -z "${IPV6_MAIN_ADDR:-}" ]]; then
+                IPV6_MAIN_ADDR="$IPV6_ADDR"
+            fi
             IPV6_ADDRESSES=()
             for (( i=0; i<PROXY_COUNT; i++ )); do
-                IPV6_ADDRESSES+=("$IPV6_ADDR")
+                IPV6_ADDRESSES+=("$IPV6_MAIN_ADDR")
             done
         fi
 
