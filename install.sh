@@ -228,6 +228,7 @@ step_confirm() {
         echo -e "  ${WHITE}       Если провайдер режет доп. IPv6, включится стабильный режим (1 IPv6 на все порты)${NC}"
         echo -e "  ${WHITE}       (строго без fallback: запусти с IPV6_STRICT=1)${NC}"
         echo -e "  ${YELLOW}     [!] Рекомендуется: Hetzner, Vultr, DigitalOcean, Aeza${NC}"
+    fi
     if [[ "$PROXY_TYPE" == "ipv6" ]]; then
         echo -e "  ${WHITE}     - IPv6 адреса + forwarding${NC}"
     fi
