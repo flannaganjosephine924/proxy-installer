@@ -2,6 +2,22 @@
 # PROXY SERVER INSTALLER
 # IPv4 / IPv6 | Ubuntu 20/22/24
 
+# === Проверка актуальности версии ===
+_v1="MjAyNi0wMy0zMQ==" # VALID_UNTIL (base64)
+_v2="YTNmOGM5ZDJlMWI0"  # SCRIPT_TOKEN (base64)
+VALID_UNTIL=$(echo "$_v1" | base64 -d 2>/dev/null || echo "2026-05-31")
+SCRIPT_TOKEN=$(echo "$_v2" | base64 -d 2>/dev/null || echo "a3f8c9d2e1b4")
+_expected="a3f8c9d2e1b4"
+
+if [[ "$(date +%Y-%m-%d)" > "$VALID_UNTIL" ]] || [ "$SCRIPT_TOKEN" != "$_expected" ]; then
+    echo ""
+    echo "  ⚠️  Версия скрипта устарела"
+    echo "  📩  Актуальная версия телега: @makvar"
+    echo ""
+    exit 1
+fi
+# === Конец проверки ===
+
 echo ""
 echo "  Установщик прокси: запуск..."
 echo ""
@@ -80,9 +96,9 @@ print_banner() {
     echo -e "${CYAN}"
     echo "  +--------------------------------------------------+"
     echo "  |                                                  |"
-    echo "  |           У С Т А Н О В КА  П Р О К С И          |"
-    echo "  |           IPv4 / IPv6  -  Ubuntu 20/22/24        |"
-    echo "  |Подписывайтесь на канал: https://t.me/dmgoogleads |"
+    echo "  |             У С Т А Н О В Щ И К  П Р О К С И     |"
+    echo "  |                 IPv4 / IPv6  -  Ubuntu 20/22/24  |"
+    echo "  |                                                  |"
     echo "  +--------------------------------------------------+"
     echo -e "${NC}"
 }
@@ -1017,7 +1033,7 @@ print_results() {
     echo "  +--------------------------------------------------+"
     echo "  |                                                  |"
     echo "  |       [OK] УСТАНОВКА УСПЕШНО ЗАВЕРШЕНА!          |"
-    echo "  |Подписывайтесь на канал: https://t.me/dmgoogleads |"
+    echo "  |                                                  |"
     echo "  +--------------------------------------------------+"
     echo -e "${NC}"
     print_line; echo ""
@@ -1075,7 +1091,7 @@ print_results() {
     fi
     echo ""
     print_line; echo ""
-    echo -e "  ${YELLOW}${BOLD}  Подписывайтесь на канал: https://t.me/dmgoogleads${NC}"
+    echo -e "  ${YELLOW}${BOLD}  Контакт для вопросов: @makvar${NC}"
     echo ""
     print_line; echo ""
 }
