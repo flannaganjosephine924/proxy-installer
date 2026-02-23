@@ -585,19 +585,21 @@ EOF
         echo "allow ${PROXY_LOGINS[$i]}" >> "$CONFIG_FILE"
         
         if [[ "$PROXY_TYPE" == "ipv6" ]]; then
-            # КЛЮЧЕВОЕ ИЗМЕНЕНИЕ: используем флаг -e для явного указания исходящего IPv6
-            # Это гарантирует, что трафик выходит именно с нужного IPv6 адреса
+            # Для IPv6: директива external ПЕРЕД proxy/socks определяет исходящий адрес
+            # Указываем ТОЛЬКО IPv6, чтобы весь трафик шёл через него
+            echo "external ${IPV6_ADDRESSES[$i]}" >> "$CONFIG_FILE"
             if [[ "$PROXY_PROTOCOL" == "http" ]]; then
-                echo "proxy -n -a -p${port} -i0.0.0.0 -e${IPV6_ADDRESSES[$i]}" >> "$CONFIG_FILE"
+                echo "proxy -p${port} -i0.0.0.0" >> "$CONFIG_FILE"
             else
-                echo "socks -n -a -p${port} -i0.0.0.0 -e${IPV6_ADDRESSES[$i]}" >> "$CONFIG_FILE"
+                echo "socks -p${port} -i0.0.0.0" >> "$CONFIG_FILE"
             fi
         else
-            # IPv4 прокси - стандартная конфигурация
+            # IPv4 прокси
+            echo "external ${SERVER_IPV4}" >> "$CONFIG_FILE"
             if [[ "$PROXY_PROTOCOL" == "http" ]]; then
-                echo "proxy -n -a -p${port} -i0.0.0.0 -e${SERVER_IPV4}" >> "$CONFIG_FILE"
+                echo "proxy -p${port} -i0.0.0.0" >> "$CONFIG_FILE"
             else
-                echo "socks -n -a -p${port} -i0.0.0.0 -e${SERVER_IPV4}" >> "$CONFIG_FILE"
+                echo "socks -p${port} -i0.0.0.0" >> "$CONFIG_FILE"
             fi
         fi
         echo "flush" >> "$CONFIG_FILE"
