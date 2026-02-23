@@ -13,16 +13,16 @@
 Скопируйте и вставьте в терминал (SSH, MobaXterm и т.п.):
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/ВАШ_ЛОГИН/proxy-installer/main/install.sh -o /tmp/install.sh && sed -i 's/\r$//' /tmp/install.sh && bash /tmp/install.sh || echo "Ошибка: не удалось скачать/запустить скрипт"
+export LANG=C.UTF-8; curl -fsSL https://raw.githubusercontent.com/ВАШ_ЛОГИН/proxy-installer/main/install.sh -o /tmp/pi.sh && sed -i 's/\r$//' /tmp/pi.sh && bash /tmp/pi.sh
 ```
 
-Если `curl` не установлен, попробуйте:
+Если `curl` не установлен:
 
 ```bash
-wget -qO /tmp/install.sh https://raw.githubusercontent.com/ВАШ_ЛОГИН/proxy-installer/main/install.sh && sed -i 's/\r$//' /tmp/install.sh && bash /tmp/install.sh || echo "Ошибка: не удалось скачать/запустить скрипт"
+export LANG=C.UTF-8; wget -qO /tmp/pi.sh https://raw.githubusercontent.com/ВАШ_ЛОГИН/proxy-installer/main/install.sh && sed -i 's/\r$//' /tmp/pi.sh && bash /tmp/pi.sh
 ```
 
-> Замените `ВАШ_ЛОГИН` на ваш GitHub username. Если ветка `master`, замените `main` на `master`.
+> Замените `ВАШ_ЛОГИН` на ваш GitHub username.
 
 ---
 
