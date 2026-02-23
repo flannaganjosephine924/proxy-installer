@@ -13,13 +13,13 @@
 Скопируйте и вставьте в терминал (SSH, MobaXterm и т.п.):
 
 ```bash
-curl -sL https://raw.githubusercontent.com/ВАШ_ЛОГИН/proxy-installer/main/install.sh -o /tmp/install.sh && sed -i 's/\r$//' /tmp/install.sh && bash /tmp/install.sh
+curl -fsSL https://raw.githubusercontent.com/ВАШ_ЛОГИН/proxy-installer/main/install.sh -o /tmp/install.sh && sed -i 's/\r$//' /tmp/install.sh && bash /tmp/install.sh || echo "Ошибка: не удалось скачать/запустить скрипт"
 ```
 
 Если `curl` не установлен, попробуйте:
 
 ```bash
-wget -qO /tmp/install.sh https://raw.githubusercontent.com/ВАШ_ЛОГИН/proxy-installer/main/install.sh && sed -i 's/\r$//' /tmp/install.sh && bash /tmp/install.sh
+wget -qO /tmp/install.sh https://raw.githubusercontent.com/ВАШ_ЛОГИН/proxy-installer/main/install.sh && sed -i 's/\r$//' /tmp/install.sh && bash /tmp/install.sh || echo "Ошибка: не удалось скачать/запустить скрипт"
 ```
 
 > Замените `ВАШ_ЛОГИН` на ваш GitHub username. Если ветка `master`, замените `main` на `master`.
