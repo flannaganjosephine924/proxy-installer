@@ -259,10 +259,16 @@ step_confirm() {
 install_dependencies() {
     step "Обновление пакетов..."
     apt-get update -qq
-    local pkgs="build-essential curl wget tar iproute2 ufw python3 net-tools"
+    local pkgs="build-essential curl wget tar iproute2 ufw python3 net-tools iptables"
+    if [[ "$PROXY_TYPE" == "ipv6" ]]; then
+        pkgs="$pkgs iptables-persistent"
+    fi
     if [[ "$WANT_PANEL" == "yes" ]]; then
         pkgs="$pkgs nginx apache2-utils"
     fi
+    # Автоответ для iptables-persistent
+    echo iptables-persistent iptables-persistent/autosave_v4 boolean true | debconf-set-selections 2>/dev/null || true
+    echo iptables-persistent iptables-persistent/autosave_v6 boolean true | debconf-set-selections 2>/dev/null || true
     DEBIAN_FRONTEND=noninteractive apt-get install -y -qq $pkgs > /dev/null 2>&1
     success "Зависимости установлены"
 }
@@ -386,24 +392,34 @@ PYEOF
 
 add_ipv6_addresses() {
     step "Добавление IPv6 адресов на $NET_INTERFACE..."
-    cat > "$IPV6_SCRIPT" <<'SCRIPT'
+    
+    # Создаём скрипт для добавления адресов при загрузке
+    cat > "$IPV6_SCRIPT" <<SCRIPT
 #!/bin/bash
+# Auto-generated script to add IPv6 addresses for proxy
+IFACE="$NET_INTERFACE"
 SCRIPT
+
     local count=0
     for addr in "${IPV6_ADDRESSES[@]}"; do
-        # Используем /128 и nodad, чтобы не забивать маршруты и не флудить DAD.
-        # NDP proxy обязателен на большинстве VPS, иначе IPv6 "отваливается" со временем.
-        echo "ip -6 addr add ${addr}/128 dev $NET_INTERFACE nodad 2>/dev/null || true" >> "$IPV6_SCRIPT"
-        echo "ip -6 neigh add proxy ${addr} dev $NET_INTERFACE 2>/dev/null || ip -6 neigh replace proxy ${addr} dev $NET_INTERFACE 2>/dev/null || true" >> "$IPV6_SCRIPT"
-        ip -6 addr add "${addr}/128" dev "$NET_INTERFACE" nodad 2>/dev/null || true
-        ip -6 neigh add proxy "${addr}" dev "$NET_INTERFACE" 2>/dev/null || ip -6 neigh replace proxy "${addr}" dev "$NET_INTERFACE" 2>/dev/null || true
+        # Добавляем в скрипт
+        cat >> "$IPV6_SCRIPT" <<ADDR
+ip -6 addr add ${addr}/128 dev \$IFACE 2>/dev/null
+ip -6 route add local ${addr}/128 dev \$IFACE 2>/dev/null
+ADDR
+        # Добавляем сейчас
+        ip -6 addr add "${addr}/128" dev "$NET_INTERFACE" 2>/dev/null || true
+        ip -6 route add local "${addr}/128" dev "$NET_INTERFACE" 2>/dev/null || true
+        
         (( count++ ))
         if (( count % 100 == 0 )); then
             info "Добавлено $count / $PROXY_COUNT..."
         fi
     done
+    
     chmod +x "$IPV6_SCRIPT"
 
+    # Systemd сервис для автозапуска
     cat > /etc/systemd/system/add-proxy-ipv6.service <<EOF
 [Unit]
 Description=Add IPv6 addresses for proxy
@@ -420,25 +436,42 @@ WantedBy=multi-user.target
 EOF
     systemctl daemon-reload
     systemctl enable add-proxy-ipv6.service > /dev/null 2>&1
-    success "IPv6 адреса добавлены"
+    
+    # Также добавляем в rc.local для совместимости со старыми системами
+    if [[ -f /etc/rc.local ]]; then
+        grep -q "add-proxy-ipv6.sh" /etc/rc.local || \
+        sed -i "/^exit 0/i $IPV6_SCRIPT" /etc/rc.local 2>/dev/null || true
+    fi
+    
+    success "IPv6 адреса добавлены ($count шт.)"
 }
 
 configure_ipv6_kernel() {
-    step "Включение IPv6 forwarding..."
+    step "Настройка IPv6 в ядре..."
+    
+    # КРИТИЧНО: ip_nonlocal_bind позволяет 3proxy биндиться на IPv6 адреса
+    # до того, как они полностью "прижились" в системе. Без этого прокси падают.
+    sysctl -w net.ipv6.ip_nonlocal_bind=1 > /dev/null 2>&1
+    
+    # Forwarding и NDP proxy
     sysctl -w net.ipv6.conf.all.forwarding=1 > /dev/null 2>&1
+    sysctl -w net.ipv6.conf.default.forwarding=1 > /dev/null 2>&1
     sysctl -w net.ipv6.conf.all.proxy_ndp=1 > /dev/null 2>&1
+    
     if [[ -n "${NET_INTERFACE:-}" ]]; then
         sysctl -w "net.ipv6.conf.${NET_INTERFACE}.proxy_ndp=1" > /dev/null 2>&1 || true
         sysctl -w "net.ipv6.conf.${NET_INTERFACE}.forwarding=1" > /dev/null 2>&1 || true
-        # На многих VPS IPv6 маршрут приходит через RA. При forwarding=1 RA может отключиться,
-        # поэтому явно разрешаем принимать RA.
+        # accept_ra=2 позволяет принимать RA даже при включённом forwarding
         sysctl -w "net.ipv6.conf.${NET_INTERFACE}.accept_ra=2" > /dev/null 2>&1 || true
     fi
-    sysctl -w net.ipv6.conf.default.forwarding=1 > /dev/null 2>&1
     sysctl -w net.ipv6.conf.default.accept_ra=2 > /dev/null 2>&1 || true
-    grep -q "net.ipv6.conf.all.forwarding" /etc/sysctl.conf || \
+    
+    # Сохраняем в sysctl.conf для персистентности
+    grep -q "net.ipv6.ip_nonlocal_bind" /etc/sysctl.conf || \
     cat >> /etc/sysctl.conf <<'EOF'
 
+# IPv6 proxy settings
+net.ipv6.ip_nonlocal_bind=1
 net.ipv6.conf.all.forwarding=1
 net.ipv6.conf.default.forwarding=1
 net.ipv6.conf.all.proxy_ndp=1
@@ -452,8 +485,7 @@ EOF
     fi
     grep -q "net.ipv6.conf.default.accept_ra" /etc/sysctl.conf || echo "net.ipv6.conf.default.accept_ra=2" >> /etc/sysctl.conf
     
-    # КРИТИЧНО: Увеличиваем conntrack для стабильности прокси под нагрузкой
-    # (без этого ядро дропает пакеты при заполнении таблицы)
+    # Conntrack tuning для стабильности под нагрузкой
     modprobe nf_conntrack 2>/dev/null || true
     sysctl -w net.netfilter.nf_conntrack_max=524288 > /dev/null 2>&1 || true
     sysctl -w net.netfilter.nf_conntrack_tcp_timeout_established=1200 > /dev/null 2>&1 || true
@@ -462,33 +494,57 @@ EOF
     grep -q "net.netfilter.nf_conntrack_max" /etc/sysctl.conf || \
     cat >> /etc/sysctl.conf <<'EOF'
 
-# Conntrack tuning для стабильности прокси
+# Conntrack tuning
 net.netfilter.nf_conntrack_max=524288
 net.netfilter.nf_conntrack_tcp_timeout_established=1200
 net.netfilter.nf_conntrack_tcp_timeout_time_wait=30
 EOF
     
-    # Гарантируем, что настройки conntrack применятся при загрузке модуля
     echo "nf_conntrack" >> /etc/modules 2>/dev/null || true
     
-    # Добавляем udev правило для применения conntrack настроек при загрузке модуля
     cat > /etc/udev/rules.d/91-nf_conntrack.rules <<'EOF'
 ACTION=="add", SUBSYSTEM=="module", KERNEL=="nf_conntrack", RUN+="/usr/sbin/sysctl -p"
 EOF
     
+    # Увеличиваем лимиты файлов для текущей сессии
+    ulimit -n 999999 2>/dev/null || true
+    
+    # Добавляем лимиты в limits.conf
+    grep -q "soft nofile 999999" /etc/security/limits.conf || \
+    cat >> /etc/security/limits.conf <<'EOF'
+* soft nofile 999999
+* hard nofile 999999
+EOF
+    
     sysctl -p > /dev/null 2>&1 || true
-    success "IPv6 forwarding включён"
+    success "IPv6 настройки ядра применены"
 }
 
-configure_mss_clamp() {
-    step "Фикс MTU (MSS clamp)..."
-    # Частая причина: соединение к сайту есть, но страницы/картинки не грузятся (PMTU blackhole).
-    # MSS clamp лечит это и для IPv4, и для IPv6.
+configure_ipv6_routing() {
+    step "Настройка маршрутизации IPv6..."
+    
+    # MSS clamp - фикс для PMTU blackhole (сайты не грузятся)
     iptables -t mangle -C POSTROUTING -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu 2>/dev/null || \
         iptables -t mangle -A POSTROUTING -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu
     ip6tables -t mangle -C POSTROUTING -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu 2>/dev/null || \
         ip6tables -t mangle -A POSTROUTING -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu
-    success "MSS clamp применён"
+    
+    # Разрешаем исходящий IPv6 трафик
+    ip6tables -C OUTPUT -o "$NET_INTERFACE" -j ACCEPT 2>/dev/null || \
+        ip6tables -A OUTPUT -o "$NET_INTERFACE" -j ACCEPT
+    ip6tables -C INPUT -i "$NET_INTERFACE" -m state --state ESTABLISHED,RELATED -j ACCEPT 2>/dev/null || \
+        ip6tables -A INPUT -i "$NET_INTERFACE" -m state --state ESTABLISHED,RELATED -j ACCEPT
+    
+    # Сохраняем правила iptables
+    if command -v netfilter-persistent >/dev/null 2>&1; then
+        netfilter-persistent save 2>/dev/null || true
+    elif command -v iptables-save >/dev/null 2>&1; then
+        mkdir -p /etc/iptables
+        iptables-save > /etc/iptables/rules.v4 2>/dev/null || true
+        ip6tables-save > /etc/iptables/rules.v6 2>/dev/null || true
+    fi
+    
+    success "Маршрутизация IPv6 настроена"
 }
 
 configure_3proxy() {
@@ -505,13 +561,12 @@ logformat "- +_L%t.%.  %N.%p %E %U %C:%c %R:%r %O %I %h %T"
 rotate 30
 maxconn 3000
 
+nserver 8.8.8.8
+nserver 1.1.1.1
+
 auth strong
 
 EOF
-    # Смешанный DNS обычно стабильнее на разных VPS
-    echo "nserver 8.8.8.8" >> "$CONFIG_FILE"
-    echo "nserver 1.1.1.1" >> "$CONFIG_FILE"
-    echo "" >> "$CONFIG_FILE"
 
     PROXY_LOGINS=(); PROXY_PASSES=()
     for (( i=0; i<PROXY_COUNT; i++ )); do
@@ -524,25 +579,25 @@ EOF
     done
 
     echo "" >> "$CONFIG_FILE"
+    
     for (( i=0; i<PROXY_COUNT; i++ )); do
         local port=$((START_PORT + i))
         echo "allow ${PROXY_LOGINS[$i]}" >> "$CONFIG_FILE"
+        
         if [[ "$PROXY_TYPE" == "ipv6" ]]; then
-            # Авто-режим: приоритет IPv6 (AAAA), если нет - fallback на IPv4 (A)
-            echo "external $SERVER_IPV4" >> "$CONFIG_FILE"
-            echo "external ${IPV6_ADDRESSES[$i]}" >> "$CONFIG_FILE"
-        fi
-        if [[ "$PROXY_PROTOCOL" == "http" ]]; then
-            if [[ "$PROXY_TYPE" == "ipv6" ]]; then
-                echo "proxy -64 -i0.0.0.0 -p${port}" >> "$CONFIG_FILE"
+            # КЛЮЧЕВОЕ ИЗМЕНЕНИЕ: используем флаг -e для явного указания исходящего IPv6
+            # Это гарантирует, что трафик выходит именно с нужного IPv6 адреса
+            if [[ "$PROXY_PROTOCOL" == "http" ]]; then
+                echo "proxy -n -a -p${port} -i0.0.0.0 -e${IPV6_ADDRESSES[$i]}" >> "$CONFIG_FILE"
             else
-                echo "proxy -i0.0.0.0 -p${port}" >> "$CONFIG_FILE"
+                echo "socks -n -a -p${port} -i0.0.0.0 -e${IPV6_ADDRESSES[$i]}" >> "$CONFIG_FILE"
             fi
         else
-            if [[ "$PROXY_TYPE" == "ipv6" ]]; then
-                echo "socks -64 -i0.0.0.0 -p${port}" >> "$CONFIG_FILE"
+            # IPv4 прокси - стандартная конфигурация
+            if [[ "$PROXY_PROTOCOL" == "http" ]]; then
+                echo "proxy -n -a -p${port} -i0.0.0.0 -e${SERVER_IPV4}" >> "$CONFIG_FILE"
             else
-                echo "socks -i0.0.0.0 -p${port}" >> "$CONFIG_FILE"
+                echo "socks -n -a -p${port} -i0.0.0.0 -e${SERVER_IPV4}" >> "$CONFIG_FILE"
             fi
         fi
         echo "flush" >> "$CONFIG_FILE"
@@ -861,6 +916,20 @@ print_results() {
     echo -e "  ${CYAN}  cat $PROXY_LIST${NC}         - список прокси"
     echo -e "  ${CYAN}  systemctl status 3proxy${NC}  - статус"
     echo -e "  ${CYAN}  systemctl restart 3proxy${NC} - перезапуск"
+    
+    if [[ "$PROXY_TYPE" == "ipv6" ]]; then
+        echo ""
+        echo -e "  ${WHITE}${BOLD}Проверка IPv6:${NC}"
+        local test_port=$START_PORT
+        local test_login="${PROXY_LOGINS[0]}"
+        local test_pass="${PROXY_PASSES[0]}"
+        if [[ "$PROXY_PROTOCOL" == "socks5" ]]; then
+            echo -e "  ${CYAN}  curl --socks5 ${test_login}:${test_pass}@${SERVER_IPV4}:${test_port} https://api64.ipify.org${NC}"
+        else
+            echo -e "  ${CYAN}  curl -x http://${test_login}:${test_pass}@${SERVER_IPV4}:${test_port} https://api64.ipify.org${NC}"
+        fi
+        echo -e "  ${YELLOW}  (должен показать IPv6 адрес)${NC}"
+    fi
     echo ""; print_line; echo ""
 }
 
@@ -884,9 +953,9 @@ main() {
 
     if [[ "$PROXY_TYPE" == "ipv6" ]]; then
         generate_ipv6
-        add_ipv6_addresses
         configure_ipv6_kernel
-        configure_mss_clamp
+        add_ipv6_addresses
+        configure_ipv6_routing
     fi
 
     configure_3proxy
