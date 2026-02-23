@@ -311,7 +311,9 @@ install_3proxy() {
     fi
 
     mkdir -p "$INSTALL_DIR"
-    cp "$built_bin" "$INSTALL_DIR/3proxy"
+    systemctl stop 3proxy 2>/dev/null || true
+    sleep 1
+    cp -f "$built_bin" "$INSTALL_DIR/3proxy"
     chmod +x "$INSTALL_DIR/3proxy"
     mkdir -p "$LOG_DIR"
     success "Прокси-сервер установлен (сборка: $ver)"
@@ -804,25 +806,24 @@ setup_web_panel() {
 
     generate_panel_html "$SERVER_IPV4" "$PROXY_TYPE" "$PROXY_PROTOCOL" "$PROXY_COUNT" "$(format_name)"
 
+    chown -R www-data:www-data "$PANEL_DIR" 2>/dev/null || chown -R nginx:nginx "$PANEL_DIR" 2>/dev/null || true
+    chmod -R 755 "$PANEL_DIR"
+
     cat > /etc/nginx/sites-available/proxy-panel <<'EOF'
 server {
     listen 80 default_server;
     listen [::]:80 default_server;
     server_name _;
 
-    types {
-        text/plain txt;
-    }
+    root /var/www/html;
+    index index.html;
 
     location /panel/ {
-        alias /var/www/html/panel/;
-        index index.html;
         auth_basic "Proxy Panel";
         auth_basic_user_file /etc/nginx/.htpasswd-panel;
-        try_files $uri $uri/ =404;
     }
     location /panel { return 301 /panel/; }
-    location / { return 301 /panel/; }
+    location = / { return 301 /panel/; }
 }
 EOF
 
