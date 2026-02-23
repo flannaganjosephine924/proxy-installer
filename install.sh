@@ -391,10 +391,10 @@ add_ipv6_addresses() {
 SCRIPT
     local count=0
     for addr in "${IPV6_ADDRESSES[@]}"; do
-        echo "ip -6 addr add ${addr}/64 dev $NET_INTERFACE 2>/dev/null || true" >> "$IPV6_SCRIPT"
-        echo "ip -6 neigh add proxy ${addr} dev $NET_INTERFACE 2>/dev/null || ip -6 neigh replace proxy ${addr} dev $NET_INTERFACE 2>/dev/null || true" >> "$IPV6_SCRIPT"
-        ip -6 addr add "${addr}/64" dev "$NET_INTERFACE" 2>/dev/null || true
-        ip -6 neigh add proxy "${addr}" dev "$NET_INTERFACE" 2>/dev/null || ip -6 neigh replace proxy "${addr}" dev "$NET_INTERFACE" 2>/dev/null || true
+        # Используем /128 и nodad, чтобы не забивать таблицу маршрутизации
+        # и не вызывать шторм DAD-пакетов, из-за которого хостинг блокирует порт
+        echo "ip -6 addr add ${addr}/128 dev $NET_INTERFACE nodad 2>/dev/null || true" >> "$IPV6_SCRIPT"
+        ip -6 addr add "${addr}/128" dev "$NET_INTERFACE" nodad 2>/dev/null || true
         (( count++ ))
         if (( count % 100 == 0 )); then
             info "Добавлено $count / $PROXY_COUNT..."
