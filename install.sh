@@ -449,6 +449,31 @@ net.ipv6.conf.${NET_INTERFACE}.accept_ra=2
 EOF
     fi
     grep -q "net.ipv6.conf.default.accept_ra" /etc/sysctl.conf || echo "net.ipv6.conf.default.accept_ra=2" >> /etc/sysctl.conf
+    
+    # КРИТИЧНО: Увеличиваем conntrack для стабильности прокси под нагрузкой
+    # (без этого ядро дропает пакеты при заполнении таблицы)
+    modprobe nf_conntrack 2>/dev/null || true
+    sysctl -w net.netfilter.nf_conntrack_max=524288 > /dev/null 2>&1 || true
+    sysctl -w net.netfilter.nf_conntrack_tcp_timeout_established=1200 > /dev/null 2>&1 || true
+    sysctl -w net.netfilter.nf_conntrack_tcp_timeout_time_wait=30 > /dev/null 2>&1 || true
+    
+    grep -q "net.netfilter.nf_conntrack_max" /etc/sysctl.conf || \
+    cat >> /etc/sysctl.conf <<'EOF'
+
+# Conntrack tuning для стабильности прокси
+net.netfilter.nf_conntrack_max=524288
+net.netfilter.nf_conntrack_tcp_timeout_established=1200
+net.netfilter.nf_conntrack_tcp_timeout_time_wait=30
+EOF
+    
+    # Гарантируем, что настройки conntrack применятся при загрузке модуля
+    echo "nf_conntrack" >> /etc/modules 2>/dev/null || true
+    
+    # Добавляем udev правило для применения conntrack настроек при загрузке модуля
+    cat > /etc/udev/rules.d/91-nf_conntrack.rules <<'EOF'
+ACTION=="add", SUBSYSTEM=="module", KERNEL=="nf_conntrack", RUN+="/usr/sbin/sysctl -p"
+EOF
+    
     sysctl -p > /dev/null 2>&1 || true
     success "IPv6 forwarding включён"
 }
@@ -475,16 +500,14 @@ EOF
     echo "" >> "$CONFIG_FILE"
 
     PROXY_LOGINS=(); PROXY_PASSES=()
-    local users_line="users"
     for (( i=0; i<PROXY_COUNT; i++ )); do
         local login pass
         login="u$(printf '%04d' $((i+1)))_$(gen_random 6)"
         pass=$(gen_random 14)
         PROXY_LOGINS+=("$login")
         PROXY_PASSES+=("$pass")
-        users_line+=" ${login}:CL:${pass}"
+        echo "users ${login}:CL:${pass}" >> "$CONFIG_FILE"
     done
-    echo "$users_line" >> "$CONFIG_FILE"
 
     echo "" >> "$CONFIG_FILE"
     for (( i=0; i<PROXY_COUNT; i++ )); do
@@ -535,7 +558,8 @@ ExecStart=$INSTALL_DIR/3proxy $CONFIG_FILE
 ExecReload=/bin/kill -HUP \$MAINPID
 Restart=on-failure
 RestartSec=10
-LimitNOFILE=65536
+LimitNOFILE=1048576
+LimitNPROC=512
 
 [Install]
 WantedBy=multi-user.target
