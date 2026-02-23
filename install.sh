@@ -583,10 +583,10 @@ generate_panel_html() {
 
     mkdir -p "$PANEL_DIR"
 
-    local js_list=""
-    while IFS= read -r line; do
-        js_list+="\"$(echo "$line" | sed 's/\\/\\\\/g; s/"/\\"/g')\","$'\n'
-    done < "$PROXY_LIST"
+    # Отдельный файл со списком прокси (проще и надежнее, чем вшивать в JS).
+    # Nginx отдаст его по URL: /panel/proxies.txt
+    cp "$PROXY_LIST" "${PANEL_DIR}/proxies.txt" 2>/dev/null || true
+    chmod 0644 "${PANEL_DIR}/proxies.txt" 2>/dev/null || true
 
     cat > "${PANEL_DIR}/index.html" <<HTMLEOF
 <!DOCTYPE html>
@@ -702,8 +702,8 @@ generate_panel_html() {
 
 <div id="toast" class="toast"></div>
 <script>
-const proxies = [${js_list}];
-let filtered = [...proxies];
+let proxies = [];
+let filtered = [];
 
 function toast(msg, ok=true) {
   const t = document.getElementById('toast');
@@ -745,7 +745,7 @@ async function copyText(text) {
 function renderList(list) {
   const c = document.getElementById('proxyList');
   if (!list.length) {
-    c.innerHTML = '<div class="row" style="justify-content:center;color:var(--muted)">Пусто</div>';
+    c.innerHTML = '<div class="row" style="justify-content:center;color:var(--muted)">Список пуст</div>';
     return;
   }
   c.innerHTML = list.map((p) => {
@@ -767,11 +767,34 @@ function filterProxies() {
 function clearSearch() { document.getElementById('searchInput').value=''; filterProxies(); }
 function copyAll() { copyText(filtered.join('\\n')); }
 function downloadTxt() {
+  // Качаем оригинальный файл, который лежит рядом с панелью.
   const a = document.createElement('a');
-  a.href = 'data:text/plain;charset=utf-8,' + encodeURIComponent(filtered.join('\\n'));
-  a.download = 'proxies.txt'; a.click();
+  a.href = './proxies.txt';
+  a.download = 'proxies.txt';
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
 }
-renderList(proxies);
+
+async function loadProxies() {
+  try {
+    const res = await fetch('./proxies.txt?ts=' + Date.now(), { cache: 'no-store' });
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    const txt = await res.text();
+    proxies = txt.split(/\\r?\\n/).map(s => s.trim()).filter(Boolean);
+    filtered = [...proxies];
+    document.getElementById('visibleCount').textContent = filtered.length;
+    renderList(filtered);
+  } catch (e) {
+    proxies = [];
+    filtered = [];
+    document.getElementById('visibleCount').textContent = '0';
+    renderList([]);
+    toast('Не удалось загрузить список proxies.txt', false);
+  }
+}
+
+loadProxies();
 </script>
 </body>
 </html>
