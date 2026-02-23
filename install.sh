@@ -223,6 +223,7 @@ step_confirm() {
         echo -e "  ${GREEN}${BOLD}[OK] ДЛЯ IPv6:${NC}"
         echo -e "  ${WHITE}     - IPv6 включён в панели VPS${NC}"
         echo -e "  ${WHITE}     - Провайдер выдал /48 или /64 подсеть${NC}"
+        echo -e "  ${WHITE}     - Если пул /64 не маршрутизируется, установка остановится (иначе 1 порт = 1 IPv6 невозможно)${NC}"
         echo -e "  ${YELLOW}     [!] Рекомендуется: Hetzner, Vultr, DigitalOcean, Aeza${NC}"
     fi
     echo ""
@@ -352,6 +353,7 @@ detect_network() {
     success "Сетевые параметры определены"
 }
 
+
 generate_ipv6() {
     step "Генерация $PROXY_COUNT IPv6 адресов..."
     local prefix64
@@ -391,38 +393,58 @@ PYEOF
 }
 
 add_ipv6_addresses() {
-    step "Добавление IPv6 адресов на $NET_INTERFACE..."
-    
-    # Создаём скрипт для добавления адресов при загрузке
+    step "Добавление IPv6 адресов и policy routing..."
+
+    # Шлюз провайдера — нужен для каждой таблицы маршрутизации
+    local gw6
+    gw6=$(ip -6 route show default | awk '{print $3; exit}')
+    if [[ -z "$gw6" ]]; then
+        err "Не найден IPv6 шлюз по умолчанию. Проверьте IPv6 на интерфейсе."
+        exit 1
+    fi
+    info "IPv6 шлюз: $gw6"
+
+    # Записываем скрипт (заголовок)
     cat > "$IPV6_SCRIPT" <<SCRIPT
 #!/bin/bash
-# Auto-generated script to add IPv6 addresses for proxy
+# Auto-generated: IPv6 addresses + policy routing for proxy
 IFACE="$NET_INTERFACE"
+GW6="$gw6"
 SCRIPT
 
     local count=0
-    for addr in "${IPV6_ADDRESSES[@]}"; do
-        # Добавляем в скрипт
+    local table_base=100  # начальный номер таблицы маршрутизации
+
+    for (( i=0; i<PROXY_COUNT; i++ )); do
+        local addr="${IPV6_ADDRESSES[$i]}"
+        local table=$(( table_base + i ))
+        local prio=$(( 1000 + i ))
+
+        # --- Записываем в скрипт автозапуска ---
         cat >> "$IPV6_SCRIPT" <<ADDR
-ip -6 addr add ${addr}/128 dev \$IFACE 2>/dev/null
-ip -6 route add local ${addr}/128 dev \$IFACE 2>/dev/null
+# proxy $((i+1)): $addr
+ip -6 addr add ${addr}/128 dev \$IFACE nodad 2>/dev/null
+ip -6 rule add from ${addr}/128 table ${table} pref ${prio} 2>/dev/null
+ip -6 route add default via \$GW6 dev \$IFACE table ${table} 2>/dev/null
 ADDR
-        # Добавляем сейчас
-        ip -6 addr add "${addr}/128" dev "$NET_INTERFACE" 2>/dev/null || true
-        ip -6 route add local "${addr}/128" dev "$NET_INTERFACE" 2>/dev/null || true
-        
+
+        # --- Применяем сейчас ---
+        ip -6 addr add "${addr}/128" dev "$NET_INTERFACE" nodad 2>/dev/null || true
+        ip -6 rule add from "${addr}/128" table "$table" pref "$prio" 2>/dev/null || true
+        ip -6 route add default via "$gw6" dev "$NET_INTERFACE" table "$table" 2>/dev/null || true
+
         (( count++ ))
-        if (( count % 100 == 0 )); then
+        if (( count % 50 == 0 )); then
             info "Добавлено $count / $PROXY_COUNT..."
         fi
     done
-    
+
     chmod +x "$IPV6_SCRIPT"
 
-    # Systemd сервис для автозапуска
+    # Systemd сервис для автозапуска после перезагрузки
     cat > /etc/systemd/system/add-proxy-ipv6.service <<EOF
 [Unit]
-Description=Add IPv6 addresses for proxy
+Description=IPv6 addresses and policy routing for proxy
 After=network-online.target
 Wants=network-online.target
 
@@ -436,14 +458,8 @@ WantedBy=multi-user.target
 EOF
     systemctl daemon-reload
     systemctl enable add-proxy-ipv6.service > /dev/null 2>&1
-    
-    # Также добавляем в rc.local для совместимости со старыми системами
-    if [[ -f /etc/rc.local ]]; then
-        grep -q "add-proxy-ipv6.sh" /etc/rc.local || \
-        sed -i "/^exit 0/i $IPV6_SCRIPT" /etc/rc.local 2>/dev/null || true
-    fi
-    
-    success "IPv6 адреса добавлены ($count шт.)"
+
+    success "IPv6 адреса добавлены ($count шт.) с policy routing"
 }
 
 configure_ipv6_kernel() {
@@ -555,7 +571,7 @@ nscache 65536
 nscache6 65536
 timeouts 1 5 30 60 180 1800 15 60 15 5
 daemon
-pidfile /var/run/3proxy.pid
+pidfile /run/3proxy.pid
 log $LOG_DIR/3proxy.log D
 logformat "- +_L%t.%.  %N.%p %E %U %C:%c %R:%r %O %I %h %T"
 rotate 30
@@ -585,13 +601,12 @@ EOF
         echo "allow ${PROXY_LOGINS[$i]}" >> "$CONFIG_FILE"
         
         if [[ "$PROXY_TYPE" == "ipv6" ]]; then
-            # Для IPv6: директива external ПЕРЕД proxy/socks определяет исходящий адрес
-            # Указываем ТОЛЬКО IPv6, чтобы весь трафик шёл через него
+            # external задаёт исходящий IP. В single-режиме он один для всех портов.
             echo "external ${IPV6_ADDRESSES[$i]}" >> "$CONFIG_FILE"
             if [[ "$PROXY_PROTOCOL" == "http" ]]; then
-                echo "proxy -p${port} -i0.0.0.0" >> "$CONFIG_FILE"
+                echo "proxy -64 -p${port} -i0.0.0.0" >> "$CONFIG_FILE"
             else
-                echo "socks -p${port} -i0.0.0.0" >> "$CONFIG_FILE"
+                echo "socks -64 -p${port} -i0.0.0.0" >> "$CONFIG_FILE"
             fi
         else
             # IPv4 прокси
@@ -633,7 +648,7 @@ Wants=$wants
 
 [Service]
 Type=forking
-PIDFile=/var/run/3proxy.pid
+PIDFile=/run/3proxy.pid
 ExecStart=$INSTALL_DIR/3proxy $CONFIG_FILE
 ExecReload=/bin/kill -HUP \$MAINPID
 Restart=on-failure
@@ -920,6 +935,8 @@ print_results() {
     echo -e "  ${CYAN}  systemctl restart 3proxy${NC} - перезапуск"
     
     if [[ "$PROXY_TYPE" == "ipv6" ]]; then
+        echo ""
+        echo -e "  ${GREEN}  Режим IPv6: 1 порт = 1 IPv6${NC}"
         echo ""
         echo -e "  ${WHITE}${BOLD}Проверка IPv6:${NC}"
         local test_port=$START_PORT
