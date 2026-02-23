@@ -77,7 +77,7 @@ print_banner() {
     echo "  +--------------------------------------------------+"
     echo "  |                                                  |"
     echo "  |             У С Т А Н О В Щ И К  П Р О К С И     |"
-    echo "  |                 IPv4 / IPv6  -  Ubuntu 20/22/24  |"
+    echo "  |             IPv4 / IPv6  -  Ubuntu 20/22/24      |"
     echo "  |                                                  |"
     echo "  +--------------------------------------------------+"
     echo -e "${NC}"
@@ -224,14 +224,7 @@ step_confirm() {
         echo -e "  ${WHITE}     - IPv6 включён в панели VPS${NC}"
         echo -e "  ${WHITE}     - Провайдер выдал /48 или /64 подсеть${NC}"
         echo -e "  ${WHITE}     - Если пул /64 не маршрутизируется, установка остановится (иначе 1 порт = 1 IPv6 невозможно)${NC}"
-        echo -e "  ${YELLOW}     [!] Рекомендуется: Hetzner, Vultr, DigitalOcean, Aeza${NC}"
-    fi
-    echo ""
-    echo -e "  ${CYAN}${BOLD}[i] БУДЕТ УСТАНОВЛЕНО:${NC}"
-    echo -e "  ${WHITE}     - 3proxy (из исходников)${NC}"
-    echo -e "  ${WHITE}     - UFW (фаервол)${NC}"
-    echo -e "  ${WHITE}     - systemd-сервис${NC}"
-    if [[ "$PROXY_TYPE" == "ipv6" ]]; then
+       if [[ "$PROXY_TYPE" == "ipv6" ]]; then
         echo -e "  ${WHITE}     - IPv6 адреса + forwarding${NC}"
     fi
     if [[ "$WANT_PANEL" == "yes" ]]; then
